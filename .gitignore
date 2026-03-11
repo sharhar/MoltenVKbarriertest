@@ -7,7 +7,6 @@
 *.exec
 *.spv
 *.bin
-/vulkan/shader_dump/
 .clang-module-cache/
 .swift-module-cache/
 metal/.clang-module-cache/
