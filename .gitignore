@@ -6,3 +6,7 @@
 *.metallib
 *.exec
 *.bin
+.clang-module-cache/
+.swift-module-cache/
+metal/.clang-module-cache/
+metal/.swift-module-cache/

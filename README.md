@@ -1,88 +1,73 @@
-# Metal `threadgroup_barrier(mem_flags::mem_threadgroup)` Shared Memory Synchronization Bug
+# `threadgroup_barrier(mem_flags::mem_threadgroup)` FFT Synchronization Repro
 
-This repository is a minimal pure-Metal reproduction for an apparent bug in Metal's shader compiler or GPU driver. In the failing configuration, `threadgroup_barrier(mem_flags::mem_threadgroup)` does not reliably synchronize `threadgroup` memory writes between threads in the same compute workgroup. Expanding the barrier flags to include `mem_device` makes the exact same shared-memory algorithm behave correctly.
+This repository is organized around a shared FFT test corpus plus backend-specific harnesses. The current implementation lives under `metal/` and exercises a 125-point FFT kernel that intermittently miscomputes when it uses `threadgroup_barrier(mem_flags::mem_threadgroup)` at its shared-memory synchronization points. The same kernel becomes stable when the barrier flags also include `mem_device`.
 
 ## Context
 
-The issue was first observed through Vulkan on macOS via MoltenVK and SPIRV-Cross, but this reproduction removes both layers and exercises Metal directly. The Vulkan source pattern is a workgroup-memory `OpControlBarrier` with `AcquireRelease | WorkgroupMemory` semantics, which SPIRV-Cross translates to `threadgroup_barrier(mem_flags::mem_threadgroup)`. Per Metal's documented barrier semantics, that should be sufficient for `threadgroup` memory ordering.
+The original issue was found through Vulkan on macOS via MoltenVK and SPIRV-Cross. The repository is now arranged so multiple backends can run the same input and reference blobs and be compared directly. Only the Metal backend exists today.
 
-## Test design
+The workload performs 875 independent FFTs of length 125 over contiguous complex input data. Each workgroup has 25 threads and uses shared memory for the two internal data reorders between radix-5 stages.
 
-The shader dispatch uses 1024 threadgroups with 256 threads per threadgroup. Inside each threadgroup, every thread:
+## Repository layout
 
-1. Writes a distinct `float` value into `threadgroup` memory.
-2. Executes a barrier.
-3. Reads a different slot written by another thread.
-4. Accumulates the result.
-5. Executes a second barrier before the next round.
+- `data/`: shared input and reference blobs.
+- `generate_blobs.py`: writes the shared input and reference blobs in the binary layout expected by backend harnesses.
+- `metal/`: Metal-specific shader, host harness, and build script.
+- `vulkan/`: reserved for a future Vulkan/MoltenVK harness. Nothing is there yet.
 
-This repeats for 8 rounds with a different shuffle offset each round. The host compares the GPU output against a CPU reference and reports exact mismatch counts.
+## Shared data layout
 
-The repository contains two kernels:
+`generate_blobs.py` generates:
 
-- `test_barrier_threadgroup_only`
-- `test_barrier_all_flags`
+- input shape `(875, 125)` of `complex64`
+- reference output `np.fft.fft(input_data, axis=-1).astype(np.complex64)`
+- binary blob format: interleaved little-endian `float32` real/imag pairs
 
-The kernels are identical except for the barrier flags:
+Each blob is `875 * 125 * 8 = 875000` bytes.
 
-- `mem_flags::mem_threadgroup`
-- `mem_flags::mem_device | mem_flags::mem_threadgroup | mem_flags::mem_texture`
+## Metal backend
 
-## Expected behavior
+The Metal harness builds and runs three kernels that differ only in barrier flags:
 
-Both kernels should produce identical and correct results. `mem_threadgroup` should be sufficient to synchronize `threadgroup` memory accesses inside a threadgroup.
+- `fft_875x125_threadgroup_only`
+- `fft_875x125_device_and_threadgroup`
+- `fft_875x125_all_flags`
 
-## Actual behavior
+All three kernels use the same FFT arithmetic, the same 25-thread workgroup shape, and the same three shared-memory barrier sites.
 
-On affected systems, the `mem_threadgroup`-only kernel intermittently returns incorrect values, indicating that some threads observe stale or uninitialized `threadgroup` memory. The broader-flags kernel acts as a workaround and produces the expected results.
-
-If both variants pass on a given machine, that is still useful data because it suggests the issue may be hardware-, driver-, or OS-version-specific.
-
-## Files
-
-- `main.swift`: Metal host program that compiles pipelines, dispatches both kernels, validates results, and prints PASS/FAIL summaries.
-- `barrier_test.metal`: Two compute kernels that differ only in barrier flags.
-- `build.sh`: Builds the Metal library and Swift executable.
-
-## How to build and run
+Build and run:
 
 ```bash
-cd metal-barrier-bug
+python3 generate_blobs.py --output-dir data
+cd metal
 ./build.sh
-./barrier_test
+./barrier_test.exec
 ```
 
-`build.sh` runs:
+Override paths and tolerances if needed:
 
 ```bash
-xcrun -sdk macosx metal -c barrier_test.metal -o barrier_test.air
-xcrun -sdk macosx metallib barrier_test.air -o default.metallib
-swiftc main.swift -o barrier_test -framework Metal -framework Foundation
+cd metal
+./barrier_test.exec \
+  --input ../data/fft_875x125_input.bin \
+  --reference ../data/fft_875x125_reference.bin \
+  --iterations 20 \
+  --abs-tol 0.005 \
+  --rel-tol 0.0005
 ```
 
-The executable loads `./default.metallib` from the current directory rather than using an app bundle.
+The harness prints:
 
-## Example output
+- mismatch count per iteration
+- first few mismatched FFT bins
+- maximum absolute complex error
+- PASS/FAIL summary across all iterations
 
-```text
-=== Metal threadgroup_barrier Bug Reproduction ===
-Device: Apple M2 Pro
-macOS: Version 14.5 (Build 23F79)
+If the bug reproduces, the expected pattern is:
 
---- Test 1: threadgroup_barrier(mem_flags::mem_threadgroup) ---
-  Iteration 1: 847 mismatches out of 262144 (FAIL)
-  Iteration 2: 1203 mismatches out of 262144 (FAIL)
-  Result: FAIL (mismatches in 10/10 iterations)
-
---- Test 2: threadgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup | mem_flags::mem_texture) ---
-  Iteration 1: 0 mismatches out of 262144 (PASS)
-  Iteration 2: 0 mismatches out of 262144 (PASS)
-  Result: PASS (0/10 iterations had mismatches)
-
-=== CONCLUSION ===
-threadgroup_barrier with mem_threadgroup alone does NOT reliably
-synchronize threadgroup memory. Adding mem_device works around the issue.
-```
+- `mem_threadgroup` only: intermittent FAIL
+- `mem_device | mem_threadgroup`: PASS
+- `mem_device | mem_threadgroup | mem_texture`: PASS
 
 ## Environment to report
 
@@ -92,6 +77,7 @@ When sharing results, include:
 - hardware platform (Apple Silicon or Intel + discrete GPU)
 - GPU model
 - Metal GPU family, if known
+- Xcode version or Command Line Tools version
 
 ## Metal Shading Language reference
 
@@ -100,4 +86,4 @@ Apple's official Metal resources page links the current Metal Shading Language S
 - [Metal resources](https://developer.apple.com/metal/resources/)
 - [Metal Shading Language Specification PDF](https://developer.apple.com/metal/Metal-Shading-Language-Specification.pdf)
 
-The relevant part of the specification is the section on threadgroup and SIMD-group synchronization functions and the `mem_flags` table for barrier functions. Apple documents `threadgroup_barrier` as an execution and memory barrier, and documents `mem_flags::mem_threadgroup` as ordering memory operations to `threadgroup` memory for threads in a threadgroup. That documented behavior is what this repro is testing.
+The relevant part of the specification is the section on threadgroup and SIMD-group synchronization functions and the `mem_flags` table for barrier functions. Apple documents `threadgroup_barrier` as an execution and memory barrier, and documents `mem_flags::mem_threadgroup` as ordering memory operations to threadgroup memory for threads in a threadgroup. This repro checks whether that documented behavior holds for the FFT kernel's shared-memory stages.
