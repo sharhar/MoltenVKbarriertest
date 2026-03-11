@@ -4,6 +4,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="${1:-"$ROOT_DIR/build"}"
 EXE="$BUILD_DIR/moltenvk_barrier_repro"
+INPUT_BLOB="${INPUT_BLOB:-$ROOT_DIR/data/fft_875x125_input.bin}"
+REFERENCE_BLOB="${REFERENCE_BLOB:-$ROOT_DIR/data/fft_875x125_reference.bin}"
 
 if [[ ! -x "$EXE" ]]; then
   echo "Executable not found: $EXE" >&2
@@ -11,10 +13,22 @@ if [[ ! -x "$EXE" ]]; then
   exit 2
 fi
 
+if [[ ! -f "$INPUT_BLOB" ]]; then
+  echo "Input blob not found: $INPUT_BLOB" >&2
+  exit 2
+fi
+
+if [[ ! -f "$REFERENCE_BLOB" ]]; then
+  echo "Reference blob not found: $REFERENCE_BLOB" >&2
+  exit 2
+fi
+
 COMMON_ARGS=(
-  --workgroups "${WORKGROUPS:-8192}"
-  --rounds "${ROUNDS:-256}"
+  --input "$INPUT_BLOB"
+  --reference "$REFERENCE_BLOB"
   --repetitions "${REPETITIONS:-50}"
+  --abs-tolerance "${ABS_TOLERANCE:-1e-5}"
+  --rel-tolerance "${REL_TOLERANCE:-1e-5}"
   --first-mismatch-limit "${FIRST_MISMATCH_LIMIT:-8}"
 )
 

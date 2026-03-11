@@ -3,9 +3,11 @@
 #include "vulkan_context.hpp"
 
 #include <algorithm>
-#include <array>
+#include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -17,10 +19,10 @@
 #include <vector>
 
 namespace {
-constexpr uint32_t kLocalSizeX = 64;
-constexpr uint32_t kValuesPerThread = 8;
-constexpr uint32_t kRawSlots = kLocalSizeX * kValuesPerThread;
-constexpr uint32_t kPaddedSlots = kRawSlots + (kRawSlots >> 4);
+constexpr uint32_t kFftBatchCount = 875;
+constexpr uint32_t kFftLength = 125;
+constexpr uint32_t kLocalSizeX = 25;
+constexpr uint32_t kComplexValueCount = kFftBatchCount * kFftLength;
 
 enum class ShaderVariant {
   kBarrierOnly,
@@ -32,27 +34,24 @@ struct Options {
   bool list_devices = false;
   uint32_t device_index = 0;
   ShaderVariant shader_variant = ShaderVariant::kBarrierOnly;
-  uint32_t workgroups = 8192;
-  uint32_t rounds = 256;
   uint32_t repetitions = 50;
   bool verbose = false;
   bool dump_spirv_info = false;
   uint32_t first_mismatch_limit = 8;
+  float abs_tolerance = 1.0e-5f;
+  float rel_tolerance = 1.0e-5f;
   std::filesystem::path shader_dir = REPRO_DEFAULT_SHADER_DIR;
+  std::filesystem::path input_path = "data/fft_875x125_input.bin";
+  std::filesystem::path reference_path = "data/fft_875x125_reference.bin";
 };
 
-uint32_t MixBits(uint32_t x) {
-  x ^= x >> 16;
-  x *= 0x7feb352dU;
-  x ^= x >> 15;
-  x *= 0x846ca68bU;
-  x ^= x >> 16;
-  return x;
-}
-
-uint32_t PaddedIndex(uint32_t raw_index) {
-  return raw_index + (raw_index >> 4);
-}
+struct ComparisonStats {
+  uint64_t mismatches = 0;
+  float max_abs_diff = 0.0f;
+  float max_rel_diff = 0.0f;
+  size_t max_abs_index = 0;
+  size_t max_rel_index = 0;
+};
 
 std::string VariantName(ShaderVariant variant) {
   switch (variant) {
@@ -77,15 +76,24 @@ std::string Hex32(uint32_t value) {
   return stream.str();
 }
 
+std::string FormatComplex(const ComplexValue& value) {
+  std::ostringstream stream;
+  stream << std::scientific << std::setprecision(8) << "(" << value.real << ", " << value.imag
+         << ")";
+  return stream.str();
+}
+
 void PrintUsage() {
   std::cout
       << "Usage: moltenvk_barrier_repro [options]\n"
       << "  --list-devices\n"
       << "  --device <index>\n"
       << "  --shader barrier_only|memorybarrier_plus_barrier|groupmemorybarrier_plus_barrier\n"
-      << "  --workgroups <N>\n"
-      << "  --rounds <N>\n"
+      << "  --input <path>\n"
+      << "  --reference <path>\n"
       << "  --repetitions <N>\n"
+      << "  --abs-tolerance <float>\n"
+      << "  --rel-tolerance <float>\n"
       << "  --shader-dir <path>\n"
       << "  --first-mismatch-limit <N>\n"
       << "  --dump-spirv-info\n"
@@ -100,6 +108,16 @@ uint32_t ParseUint(std::string_view text, const char* flag_name) {
                              std::string(text));
   }
   return static_cast<uint32_t>(value);
+}
+
+float ParseFloat(std::string_view text, const char* flag_name) {
+  size_t consumed = 0;
+  const float value = std::stof(std::string(text), &consumed);
+  if (consumed != text.size()) {
+    throw std::runtime_error(std::string("Invalid value for ") + flag_name + ": " +
+                             std::string(text));
+  }
+  return value;
 }
 
 ShaderVariant ParseShaderVariant(std::string_view text) {
@@ -136,10 +154,10 @@ Options ParseOptions(int argc, char** argv) {
       options.device_index = ParseUint(require_value("--device"), "--device");
     } else if (arg == "--shader") {
       options.shader_variant = ParseShaderVariant(require_value("--shader"));
-    } else if (arg == "--workgroups") {
-      options.workgroups = ParseUint(require_value("--workgroups"), "--workgroups");
-    } else if (arg == "--rounds") {
-      options.rounds = ParseUint(require_value("--rounds"), "--rounds");
+    } else if (arg == "--input") {
+      options.input_path = require_value("--input");
+    } else if (arg == "--reference") {
+      options.reference_path = require_value("--reference");
     } else if (arg == "--repetitions") {
       options.repetitions = ParseUint(require_value("--repetitions"), "--repetitions");
     } else if (arg == "--shader-dir") {
@@ -151,64 +169,101 @@ Options ParseOptions(int argc, char** argv) {
     } else if (arg == "--first-mismatch-limit") {
       options.first_mismatch_limit =
           ParseUint(require_value("--first-mismatch-limit"), "--first-mismatch-limit");
+    } else if (arg == "--abs-tolerance") {
+      options.abs_tolerance = ParseFloat(require_value("--abs-tolerance"), "--abs-tolerance");
+    } else if (arg == "--rel-tolerance") {
+      options.rel_tolerance = ParseFloat(require_value("--rel-tolerance"), "--rel-tolerance");
     } else {
       throw std::runtime_error("Unknown argument: " + std::string(arg));
     }
   }
 
-  if (options.workgroups == 0 || options.rounds == 0 || options.repetitions == 0) {
-    throw std::runtime_error("workgroups, rounds, and repetitions must all be greater than zero.");
+  if (options.repetitions == 0) {
+    throw std::runtime_error("repetitions must be greater than zero.");
+  }
+  if (options.abs_tolerance < 0.0f || options.rel_tolerance < 0.0f) {
+    throw std::runtime_error("Tolerances must be non-negative.");
   }
   return options;
 }
 
-std::vector<uint32_t> ComputeReference(const Options& options) {
-  const uint64_t total_invocations =
-      static_cast<uint64_t>(options.workgroups) * static_cast<uint64_t>(kLocalSizeX);
-  std::vector<uint32_t> reference(total_invocations, 0);
-  std::array<uint32_t, kPaddedSlots> shared_memory{};
-
-  for (uint32_t group = 0; group < options.workgroups; ++group) {
-    std::array<uint32_t, kLocalSizeX> state{};
-    for (uint32_t lane = 0; lane < kLocalSizeX; ++lane) {
-      state[lane] = MixBits((group + 1u) * 0x9e3779b9U ^ (lane + 1u) * 0x85ebca6bU);
-    }
-
-    for (uint32_t round = 0; round < options.rounds; ++round) {
-      shared_memory.fill(0);
-
-      for (uint32_t lane = 0; lane < kLocalSizeX; ++lane) {
-        for (uint32_t slot = 0; slot < kValuesPerThread; ++slot) {
-          const uint32_t write_slot = (slot * 5u + round + (lane >> 4u)) & 7u;
-          const uint32_t raw = lane * kValuesPerThread + write_slot;
-          const uint32_t value = MixBits(state[lane] ^ (round * 0x27d4eb2dU) ^
-                                         (slot * 0x165667b1U) ^ (write_slot * 0x9e3779b9U));
-          shared_memory[PaddedIndex(raw)] = value;
-        }
-      }
-
-      std::array<uint32_t, kLocalSizeX> next_state{};
-      for (uint32_t lane = 0; lane < kLocalSizeX; ++lane) {
-        uint32_t round_accum = state[lane] ^ (round * 0x94d049bbU);
-        for (uint32_t slot = 0; slot < kValuesPerThread; ++slot) {
-          const uint32_t src_lane = (lane * 17u + slot * 7u + round * 3u + 13u) & 63u;
-          const uint32_t src_slot = (slot * 3u + lane + round) & 7u;
-          const uint32_t observed =
-              shared_memory[PaddedIndex(src_lane * kValuesPerThread + src_slot)];
-          round_accum = MixBits(round_accum ^ observed ^ ((src_lane + 1u) * 0x85ebca6bU) ^
-                                ((src_slot + 1u) * 0xc2b2ae35U));
-        }
-        next_state[lane] = MixBits(round_accum ^ 0x27d4eb2dU ^ lane);
-      }
-      state = next_state;
-    }
-
-    for (uint32_t lane = 0; lane < kLocalSizeX; ++lane) {
-      reference[group * kLocalSizeX + lane] = state[lane];
-    }
+std::vector<ComplexValue> LoadBlob(const std::filesystem::path& path, size_t expected_count) {
+  std::ifstream file(path, std::ios::binary | std::ios::ate);
+  if (!file) {
+    throw std::runtime_error("Failed to open blob: " + path.string());
   }
 
-  return reference;
+  const std::streamsize size_bytes = file.tellg();
+  const std::streamsize expected_bytes =
+      static_cast<std::streamsize>(expected_count * sizeof(ComplexValue));
+  if (size_bytes != expected_bytes) {
+    throw std::runtime_error("Unexpected blob size for " + path.string() + ". Expected " +
+                             std::to_string(expected_bytes) + " bytes, got " +
+                             std::to_string(size_bytes) + " bytes.");
+  }
+
+  file.seekg(0, std::ios::beg);
+  std::vector<ComplexValue> values(expected_count);
+  if (!file.read(reinterpret_cast<char*>(values.data()), expected_bytes)) {
+    throw std::runtime_error("Failed to read blob: " + path.string());
+  }
+  return values;
+}
+
+bool ComponentWithinTolerance(float actual, float expected, float abs_tolerance,
+                              float rel_tolerance) {
+  const float diff = std::fabs(actual - expected);
+  const float scale = std::max(std::fabs(actual), std::fabs(expected));
+  return diff <= abs_tolerance + rel_tolerance * scale;
+}
+
+void CompareOutputs(const std::vector<ComplexValue>& actual,
+                    const std::vector<ComplexValue>& expected,
+                    uint32_t repetition,
+                    const Options& options,
+                    ComparisonStats& stats,
+                    std::vector<std::string>& mismatch_lines) {
+  for (size_t index = 0; index < actual.size(); ++index) {
+    const ComplexValue& actual_value = actual[index];
+    const ComplexValue& expected_value = expected[index];
+
+    const float real_diff = std::fabs(actual_value.real - expected_value.real);
+    const float imag_diff = std::fabs(actual_value.imag - expected_value.imag);
+    const float abs_diff = std::max(real_diff, imag_diff);
+    const float scale = std::max({std::fabs(actual_value.real), std::fabs(actual_value.imag),
+                                  std::fabs(expected_value.real), std::fabs(expected_value.imag),
+                                  1.0f});
+    const float rel_diff = abs_diff / scale;
+
+    if (abs_diff > stats.max_abs_diff) {
+      stats.max_abs_diff = abs_diff;
+      stats.max_abs_index = index;
+    }
+    if (rel_diff > stats.max_rel_diff) {
+      stats.max_rel_diff = rel_diff;
+      stats.max_rel_index = index;
+    }
+
+    const bool match =
+        ComponentWithinTolerance(actual_value.real, expected_value.real, options.abs_tolerance,
+                                 options.rel_tolerance) &&
+        ComponentWithinTolerance(actual_value.imag, expected_value.imag, options.abs_tolerance,
+                                 options.rel_tolerance);
+
+    if (!match) {
+      ++stats.mismatches;
+      if (mismatch_lines.size() < options.first_mismatch_limit) {
+        const uint32_t batch = static_cast<uint32_t>(index / kFftLength);
+        const uint32_t fft_index = static_cast<uint32_t>(index % kFftLength);
+        std::ostringstream line;
+        line << "Mismatch[" << index << "] batch=" << batch << " element=" << fft_index
+             << " repetition=" << repetition << " expected=" << FormatComplex(expected_value)
+             << " actual=" << FormatComplex(actual_value)
+             << " max_component_diff=" << std::scientific << std::setprecision(8) << abs_diff;
+        mismatch_lines.push_back(line.str());
+      }
+    }
+  }
 }
 
 void PrintDeviceList(const std::vector<DeviceInfo>& devices) {
@@ -233,6 +288,8 @@ void PrintDeviceList(const std::vector<DeviceInfo>& devices) {
               << "\n";
     std::cout << "    Portability subset: "
               << (device.has_portability_subset ? "present" : "absent") << "\n";
+    std::cout << "    Scalar block layout: "
+              << (device.has_scalar_block_layout ? "present" : "absent") << "\n";
   }
 }
 
@@ -254,10 +311,17 @@ void PrintRunHeader(const VulkanContext& context, const Options& options) {
   }
   std::cout << "Portability subset extension: "
             << (device.has_portability_subset ? "present" : "absent") << "\n";
+  std::cout << "Scalar block layout: "
+            << (device.has_scalar_block_layout ? "present" : "absent") << "\n";
   std::cout << "Shader variant: " << VariantName(options.shader_variant) << "\n";
-  std::cout << "Workgroups: " << options.workgroups << "\n";
-  std::cout << "Shader rounds: " << options.rounds << "\n";
+  std::cout << "FFT shape: (" << kFftBatchCount << ", " << kFftLength << ")\n";
+  std::cout << "Workgroups: " << kFftBatchCount << "\n";
+  std::cout << "Local size X: " << kLocalSizeX << "\n";
+  std::cout << "Input blob: " << options.input_path << "\n";
+  std::cout << "Reference blob: " << options.reference_path << "\n";
   std::cout << "Host repetitions: " << options.repetitions << "\n";
+  std::cout << "Abs tolerance: " << std::scientific << options.abs_tolerance << "\n";
+  std::cout << "Rel tolerance: " << std::scientific << options.rel_tolerance << "\n";
 }
 }  // namespace
 
@@ -270,31 +334,26 @@ int main(int argc, char** argv) {
       return 0;
     }
 
-    VulkanContext context(options.device_index);
-    PrintRunHeader(context, options);
-
     const std::filesystem::path shader_path =
         VariantShaderPath(options.shader_dir, options.shader_variant);
     if (!std::filesystem::exists(shader_path)) {
       throw std::runtime_error("Shader file not found: " + shader_path.string());
     }
 
-    const uint64_t total_output_words =
-        static_cast<uint64_t>(options.workgroups) * static_cast<uint64_t>(kLocalSizeX);
-    if (total_output_words > std::numeric_limits<uint32_t>::max()) {
-      throw std::runtime_error("Requested output size is too large.");
-    }
+    const std::vector<ComplexValue> input_blob = LoadBlob(options.input_path, kComplexValueCount);
+    const std::vector<ComplexValue> reference_blob =
+        LoadBlob(options.reference_path, kComplexValueCount);
 
-    ComputePipeline pipeline(context, shader_path, static_cast<uint32_t>(total_output_words));
+    VulkanContext context(options.device_index);
+    PrintRunHeader(context, options);
 
+    ComputePipeline pipeline(context, shader_path, kComplexValueCount);
     if (options.dump_spirv_info) {
       std::cout << "Shader path: " << shader_path << "\n";
       std::cout << FormatSpirvSummary(pipeline.spirv_summary()) << "\n";
     }
 
-    const std::vector<uint32_t> reference = ComputeReference(options);
-
-    uint64_t total_mismatches = 0;
+    ComparisonStats stats;
     std::optional<uint32_t> first_failing_repetition;
     std::vector<std::string> mismatch_lines;
 
@@ -304,23 +363,12 @@ int main(int argc, char** argv) {
                   << "\n";
       }
 
-      const std::vector<uint32_t> gpu_output =
-          pipeline.Run({options.workgroups, options.rounds}, options.verbose);
-
-      for (size_t index = 0; index < gpu_output.size(); ++index) {
-        if (gpu_output[index] != reference[index]) {
-          ++total_mismatches;
-          if (!first_failing_repetition.has_value()) {
-            first_failing_repetition = repetition;
-          }
-          if (mismatch_lines.size() < options.first_mismatch_limit) {
-            std::ostringstream line;
-            line << "Mismatch[" << index << "]: expected=" << Hex32(reference[index])
-                 << " actual=" << Hex32(gpu_output[index])
-                 << " repetition=" << repetition;
-            mismatch_lines.push_back(line.str());
-          }
-        }
+      const std::vector<ComplexValue> gpu_output =
+          pipeline.Run({kFftBatchCount}, input_blob);
+      const uint64_t mismatches_before = stats.mismatches;
+      CompareOutputs(gpu_output, reference_blob, repetition, options, stats, mismatch_lines);
+      if (stats.mismatches > mismatches_before && !first_failing_repetition.has_value()) {
+        first_failing_repetition = repetition;
       }
     }
 
@@ -331,9 +379,12 @@ int main(int argc, char** argv) {
       }
     }
 
-    std::cout << "Mismatches: " << total_mismatches << "\n";
-    std::cout << "Status: " << (total_mismatches == 0 ? "PASS" : "FAIL") << "\n";
-    return total_mismatches == 0 ? 0 : 1;
+    std::cout << "Mismatches: " << stats.mismatches << "\n";
+    std::cout << "Max component abs diff: " << std::scientific << stats.max_abs_diff << "\n";
+    std::cout << "Max component rel diff: " << std::scientific << stats.max_rel_diff
+              << " at index " << stats.max_rel_index << "\n";
+    std::cout << "Status: " << (stats.mismatches == 0 ? "PASS" : "FAIL") << "\n";
+    return stats.mismatches == 0 ? 0 : 1;
   } catch (const std::exception& exception) {
     std::cerr << "Runtime error: " << exception.what() << "\n";
     return 2;

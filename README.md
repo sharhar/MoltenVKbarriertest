@@ -1,29 +1,27 @@
 # MoltenVK Barrier Repro
 
-This repository is a purpose-built Vulkan compute repro for a suspected MoltenVK/macOS shared-memory synchronization bug. It runs the same workgroup-local algorithm in two GLSL compute shader variants:
+This repository is a minimal Vulkan compute repro for a suspected MoltenVK/macOS shared-memory synchronization bug in a length-125 FFT kernel. It runs the same FFT shader in two variants:
 
-- `barrier_only`: uses `barrier()` at each shared-memory sync point
-- `memorybarrier_plus_barrier`: uses `memoryBarrier(); barrier()` at the same sync points
+- `barrier_only`: uses `barrier()` at every shared-memory synchronization point
+- `memorybarrier_plus_barrier`: uses `memoryBarrier(); barrier()` at those same points
 
-The host computes an exact CPU reference and compares every output word. The intended bug signature is:
+The host loads a fixed input blob, dispatches 875 FFTs of length 125, and compares the in-place output buffer against a reference output blob. The intended bug signature is:
 
 - `barrier_only` fails
 - `memorybarrier_plus_barrier` passes
 
-If that happens on MoltenVK/macOS, the repo provides a compact issue attachment set: shader sources, SPIR-V binaries, SPIR-V disassembly, deterministic host verification, and concise device/driver metadata.
-
 ## What This Repo Demonstrates
 
-The test stresses `shared` memory visibility inside a 64-thread workgroup. Each lane writes eight values into a padded shared-memory layout, synchronizes, reads back a transposed cross-lane pattern, folds the reads into a checksum, and repeats for many rounds. The only intentional difference between the two primary shader variants is whether the shared-memory sync point is:
+The shader performs 875 independent FFTs of length 125 over a contiguous axis. Each workgroup handles one FFT, with `local_size_x = 25` and five complex values per invocation. Two stages require shared-memory shuffles through `shared vec2 sdata[125]`, and the only intentional difference between the two primary variants is whether the shared-memory sync sites use:
 
 - `barrier()`
 - `memoryBarrier(); barrier()`
 
-By GLSL/Vulkan compute semantics, `barrier()` should already be sufficient for workgroup-local synchronization and visibility of `shared` memory accesses. Requiring the stronger sequence would suggest a backend or translation issue rather than expected shader semantics.
+If `barrier_only` corrupts the FFT result on MoltenVK while the workaround passes against the same reference blob, that is a strong signal that shared-memory synchronization is being lowered incorrectly in the Vulkan-to-Metal path.
 
 ## Why MoltenVK Is Relevant
 
-On macOS, Vulkan applications typically run through MoltenVK, the Vulkan-on-Metal portability layer from Khronos. The LunarG macOS Vulkan SDK ships the Vulkan loader and MoltenVK integration used by most macOS Vulkan setups.
+On macOS, Vulkan applications normally run through MoltenVK, the Vulkan-on-Metal portability layer from Khronos. The LunarG macOS Vulkan SDK ships the Vulkan loader and MoltenVK integration used by most macOS Vulkan setups.
 
 Authoritative upstream references:
 
@@ -48,6 +46,22 @@ Optional but useful:
 - Vulkan validation layers from the SDK
 - MoltenVK debug or logging environment variables if you want extra runtime diagnostics
 
+## Blob Format
+
+The repro uses raw binary blobs instead of generating inputs or shipping a CPU FFT implementation.
+
+- shape: `(875, 125)`
+- logical meaning: `875` FFT batches, each of length `125`
+- storage: row-major contiguous complex array
+- element format: two little-endian `float32` values per complex number, stored as `(real, imag)`
+- total element count: `109375`
+- total file size: `875000` bytes
+
+Default filenames:
+
+- `data/fft_875x125_input.bin`
+- `data/fft_875x125_reference.bin`
+
 ## Setup
 
 1. Install the current LunarG macOS Vulkan SDK from the official LunarG site.
@@ -60,7 +74,8 @@ export VULKAN_SDK="/path/to/vulkansdk/macOS"
 source "$VULKAN_SDK/setup-env.sh"
 ```
 
-3. Build the repro.
+3. Place the input and reference blobs under `data/` or pass their paths explicitly at runtime.
+4. Build the repro.
 
 ```bash
 ./scripts/build_macos.sh
@@ -76,11 +91,20 @@ Run both primary variants back to back:
 ./scripts/run_repro.sh
 ```
 
+Or override the blobs explicitly:
+
+```bash
+INPUT_BLOB=/path/to/input.bin REFERENCE_BLOB=/path/to/reference.bin ./scripts/run_repro.sh
+```
+
 Run a single variant directly:
 
 ```bash
-./build/moltenvk_barrier_repro --shader barrier_only --workgroups 8192 --rounds 256 --repetitions 50
-./build/moltenvk_barrier_repro --shader memorybarrier_plus_barrier --workgroups 8192 --rounds 256 --repetitions 50
+./build/moltenvk_barrier_repro \
+  --shader barrier_only \
+  --input data/fft_875x125_input.bin \
+  --reference data/fft_875x125_reference.bin \
+  --repetitions 50
 ```
 
 Useful command-line flags:
@@ -88,9 +112,11 @@ Useful command-line flags:
 - `--list-devices`
 - `--device <index>`
 - `--shader barrier_only|memorybarrier_plus_barrier|groupmemorybarrier_plus_barrier`
-- `--workgroups N`
-- `--rounds N`
+- `--input <path>`
+- `--reference <path>`
 - `--repetitions N`
+- `--abs-tolerance X`
+- `--rel-tolerance X`
 - `--verbose`
 - `--dump-spirv-info`
 - `--first-mismatch-limit N`
@@ -98,7 +124,7 @@ Useful command-line flags:
 
 The application exits with:
 
-- `0` when the selected variant matches the CPU reference
+- `0` when the selected variant matches the reference blob within tolerance
 - `1` when mismatches are found
 - `2` for setup or runtime errors
 
@@ -112,37 +138,31 @@ The `run_repro.sh` wrapper exits differently on purpose:
 
 - If both variants pass, the bug did not reproduce in that run.
 - If `barrier_only` fails and `memorybarrier_plus_barrier` passes, the repro succeeded.
-- If both fail, there is likely a broader bug, build issue, or environment problem unrelated to the narrow barrier difference.
+- If both fail, there is likely a broader issue unrelated to the narrow barrier difference.
 
-Example output:
-
-```text
-Device: Apple M3 Max via MoltenVK
-Shader variant: barrier_only
-Workgroups: 8192
-Shader rounds: 256
-Host repetitions: 50
-Mismatches: 137
-Status: FAIL
-```
+Each mismatch line prints the flattened index, FFT batch, element index inside the 125-point FFT, repetition number, expected complex value, actual complex value, and maximum component error.
 
 ## Design Note
 
-This shader pattern is intentionally close to a reduced FFT-style reorder/transposition workload:
+This shader is a reduced real workload rather than a synthetic checksum kernel. It uses the exact shared-memory shuffle pattern from the failing FFT implementation:
 
-- each lane owns eight values
-- writes land in a padded shared-memory layout using `idx = raw + (raw >> 4)`
-- reads come from a transposed cross-lane address pattern
-- repeated rounds force the backend to preserve visibility across many shared-memory reuse cycles
+- stage-local register butterflies
+- shared-memory transposes through `sdata[125]`
+- in-place global buffer IO
+- three workgroup barriers in the barrier-only variant
 
-That structure tends to expose weak or incorrectly lowered workgroup-memory barriers more reliably than a trivial single-write/single-read example while staying compact enough for maintainers to inspect quickly.
+That makes the repro much closer to the failure mode you observed while keeping the host side small and auditable.
 
 ## Capturing Extra Diagnostics
 
 Print built-in SPIR-V barrier metadata:
 
 ```bash
-./build/moltenvk_barrier_repro --shader barrier_only --dump-spirv-info
+./build/moltenvk_barrier_repro \
+  --shader barrier_only \
+  --input data/fft_875x125_input.bin \
+  --reference data/fft_875x125_reference.bin \
+  --dump-spirv-info
 ```
 
 Disassemble generated SPIR-V:
@@ -160,10 +180,8 @@ Compile shaders without a full rebuild:
 Useful extra diagnostics:
 
 - enable Vulkan validation layers from the LunarG SDK
-- enable MoltenVK runtime logging/debug environment variables if available in your SDK/runtime
+- enable MoltenVK runtime logging/debug environment variables if available
 - capture generated MSL or a Metal compute trace when testing a local MoltenVK fix
-
-This repo does not automate MSL dumping because the exact workflow depends on the SDK/runtime setup. If you are testing MoltenVK from source, point the Vulkan loader at your custom runtime and collect the translated MSL or a Metal GPU capture alongside the repro output.
 
 ## Using A Custom MoltenVK Build
 
@@ -180,6 +198,7 @@ When filing an issue, attach:
 - MoltenVK version
 - command lines used
 - output from both shader variants
+- input blob and reference blob metadata
 - generated `.spv` files
 - SPIR-V disassembly from `build/spirv/`
 - generated MSL or a Metal trace if you captured one

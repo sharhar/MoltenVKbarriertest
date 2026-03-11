@@ -1,4 +1,7 @@
 #version 450
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_KHR_shader_subgroup_arithmetic : require
+#extension GL_EXT_debug_printf : require
 #extension GL_GOOGLE_include_directive : require
 
 #define SHARED_SYNC() groupMemoryBarrier(); barrier()

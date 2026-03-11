@@ -6,11 +6,11 @@ This repo keeps three artifact layers for each shader variant:
 - compiled SPIR-V in `build/shaders/`
 - disassembly in `build/spirv/` after running `scripts/dump_spirv.sh`
 
-The main inspection point is the synchronization sequence emitted around the shared-memory access pattern.
+The main inspection point is the synchronization sequence emitted around the FFT shared-memory shuffles.
 
 Expected source-level difference:
 
-- `barrier_only.comp` uses `barrier()`
+- `barrier_only.comp` uses `barrier()` at the FFT shuffle sync sites
 - `memorybarrier_plus_barrier.comp` uses `memoryBarrier(); barrier()`
 - `groupmemorybarrier_plus_barrier.comp` uses `groupMemoryBarrier(); barrier()` for triangulation
 

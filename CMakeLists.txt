@@ -51,17 +51,6 @@ target_compile_definitions(moltenvk_barrier_repro PRIVATE
 add_dependencies(moltenvk_barrier_repro repro_shaders)
 
 add_custom_target(repro_run
-    COMMAND "${CMAKE_COMMAND}" -E env
-            "$<TARGET_FILE:moltenvk_barrier_repro>"
-            --shader barrier_only
-            --workgroups 1024
-            --rounds 128
-            --repetitions 4
-    COMMAND "${CMAKE_COMMAND}" -E env
-            "$<TARGET_FILE:moltenvk_barrier_repro>"
-            --shader memorybarrier_plus_barrier
-            --workgroups 1024
-            --rounds 128
-            --repetitions 4
+    COMMAND "${CMAKE_SOURCE_DIR}/scripts/run_repro.sh" "${CMAKE_BINARY_DIR}"
     DEPENDS moltenvk_barrier_repro
     USES_TERMINAL)

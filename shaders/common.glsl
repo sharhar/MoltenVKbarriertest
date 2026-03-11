@@ -1,69 +1,270 @@
-#ifndef SHARED_SYNC
-#error "SHARED_SYNC must be defined by the shader variant."
-#endif
+shared vec2 sdata[125];
 
-layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+layout(set = 0, binding = 0, scalar) buffer Buffer0 {
+    vec2 data[];
+} buf1;
 
-layout(std430, binding = 0) buffer OutputBuffer {
-    uint data[];
-} output_buffer;
-
-layout(push_constant) uniform Params {
-    uint rounds;
-} params;
-
-const uint VALUES_PER_THREAD = 8u;
-const uint RAW_SLOTS = 64u * VALUES_PER_THREAD;
-const uint PADDED_SLOTS = RAW_SLOTS + (RAW_SLOTS >> 4u);
-
-shared uint sdata[PADDED_SLOTS];
-
-uint padded_index(uint raw_index) {
-    return raw_index + (raw_index >> 4u);
-}
-
-uint mix_bits(uint x) {
-    x ^= x >> 16u;
-    x *= 0x7feb352du;
-    x ^= x >> 15u;
-    x *= 0x846ca68bu;
-    x ^= x >> 16u;
-    return x;
-}
+layout(local_size_x = 25, local_size_y = 1, local_size_z = 1) in;
 
 void main() {
-    const uint lane = gl_LocalInvocationID.x;
-    const uint group = gl_WorkGroupID.x;
-    uint state = mix_bits((group + 1u) * 0x9e3779b9u ^ (lane + 1u) * 0x85ebca6bu);
+    uint workgroup_index = uint(gl_WorkGroupID.x);
+    uint tid = gl_LocalInvocationID.x;
+    uint input_batch_offset = uint(0);
+    uint output_batch_offset = uint(0);
+    vec2 omega_register = vec2(0);
+    uint io_index = uint(0);
+    vec2 radix_register_0 = vec2(0);
+    vec2 radix_register_1 = vec2(0);
+    vec2 radix_register_2 = vec2(0);
+    vec2 radix_register_3 = vec2(0);
+    vec2 radix_register_4 = vec2(0);
+    vec2 fft_reg_0 = vec2(0);
+    vec2 fft_reg_1 = vec2(0);
+    vec2 fft_reg_2 = vec2(0);
+    vec2 fft_reg_3 = vec2(0);
+    vec2 fft_reg_4 = vec2(0);
 
-    for (uint round = 0u; round < params.rounds; ++round) {
-        for (uint slot = 0u; slot < VALUES_PER_THREAD; ++slot) {
-            const uint write_slot = (slot * 5u + round + (lane >> 4u)) & 7u;
-            const uint raw = lane * VALUES_PER_THREAD + write_slot;
-            const uint value = mix_bits(state
-                                        ^ (round * 0x27d4eb2du)
-                                        ^ (slot * 0x165667b1u)
-                                        ^ (write_slot * 0x9e3779b9u));
-            sdata[padded_index(raw)] = value;
-        }
+    input_batch_offset = workgroup_index * 125u;
+    io_index = tid + input_batch_offset;
+    fft_reg_0 = buf1.data[io_index];
+    io_index = tid + 25u + input_batch_offset;
+    fft_reg_1 = buf1.data[io_index];
+    io_index = tid + 50u + input_batch_offset;
+    fft_reg_2 = buf1.data[io_index];
+    io_index = tid + 75u + input_batch_offset;
+    fft_reg_3 = buf1.data[io_index];
+    io_index = tid + 100u + input_batch_offset;
+    fft_reg_4 = buf1.data[io_index];
 
-        SHARED_SYNC();
+    radix_register_0 = fft_reg_0;
+    radix_register_0 += fft_reg_1;
+    radix_register_0 += fft_reg_2;
+    radix_register_0 += fft_reg_3;
+    radix_register_0 += fft_reg_4;
+    radix_register_1 = fft_reg_0;
+    omega_register = vec2(fma(fft_reg_1.x, vec2(0.30901699437494745f, -0.9510565162951535f).x, ((-fft_reg_1.y) * vec2(0.30901699437494745f, -0.9510565162951535f).y)), fma(fft_reg_1.x, vec2(0.30901699437494745f, -0.9510565162951535f).y, (fft_reg_1.y * vec2(0.30901699437494745f, -0.9510565162951535f).x)));
+    radix_register_1 += omega_register;
+    omega_register = vec2(fma(fft_reg_2.x, vec2(-0.8090169943749473f, -0.5877852522924732f).x, ((-fft_reg_2.y) * vec2(-0.8090169943749473f, -0.5877852522924732f).y)), fma(fft_reg_2.x, vec2(-0.8090169943749473f, -0.5877852522924732f).y, (fft_reg_2.y * vec2(-0.8090169943749473f, -0.5877852522924732f).x)));
+    radix_register_1 += omega_register;
+    omega_register = vec2(fma(fft_reg_3.x, vec2(-0.8090169943749475f, 0.587785252292473f).x, ((-fft_reg_3.y) * vec2(-0.8090169943749475f, 0.587785252292473f).y)), fma(fft_reg_3.x, vec2(-0.8090169943749475f, 0.587785252292473f).y, (fft_reg_3.y * vec2(-0.8090169943749475f, 0.587785252292473f).x)));
+    radix_register_1 += omega_register;
+    omega_register = vec2(fma(fft_reg_4.x, vec2(0.30901699437494723f, 0.9510565162951536f).x, ((-fft_reg_4.y) * vec2(0.30901699437494723f, 0.9510565162951536f).y)), fma(fft_reg_4.x, vec2(0.30901699437494723f, 0.9510565162951536f).y, (fft_reg_4.y * vec2(0.30901699437494723f, 0.9510565162951536f).x)));
+    radix_register_1 += omega_register;
+    radix_register_2 = fft_reg_0;
+    omega_register = vec2(fma(fft_reg_1.x, vec2(-0.8090169943749473f, -0.5877852522924732f).x, ((-fft_reg_1.y) * vec2(-0.8090169943749473f, -0.5877852522924732f).y)), fma(fft_reg_1.x, vec2(-0.8090169943749473f, -0.5877852522924732f).y, (fft_reg_1.y * vec2(-0.8090169943749473f, -0.5877852522924732f).x)));
+    radix_register_2 += omega_register;
+    omega_register = vec2(fma(fft_reg_2.x, vec2(0.30901699437494723f, 0.9510565162951536f).x, ((-fft_reg_2.y) * vec2(0.30901699437494723f, 0.9510565162951536f).y)), fma(fft_reg_2.x, vec2(0.30901699437494723f, 0.9510565162951536f).y, (fft_reg_2.y * vec2(0.30901699437494723f, 0.9510565162951536f).x)));
+    radix_register_2 += omega_register;
+    omega_register = vec2(fma(fft_reg_3.x, vec2(0.30901699437494773f, -0.9510565162951535f).x, ((-fft_reg_3.y) * vec2(0.30901699437494773f, -0.9510565162951535f).y)), fma(fft_reg_3.x, vec2(0.30901699437494773f, -0.9510565162951535f).y, (fft_reg_3.y * vec2(0.30901699437494773f, -0.9510565162951535f).x)));
+    radix_register_2 += omega_register;
+    omega_register = vec2(fma(fft_reg_4.x, vec2(-0.8090169943749477f, 0.5877852522924728f).x, ((-fft_reg_4.y) * vec2(-0.8090169943749477f, 0.5877852522924728f).y)), fma(fft_reg_4.x, vec2(-0.8090169943749477f, 0.5877852522924728f).y, (fft_reg_4.y * vec2(-0.8090169943749477f, 0.5877852522924728f).x)));
+    radix_register_2 += omega_register;
+    radix_register_3 = fft_reg_0;
+    omega_register = vec2(fma(fft_reg_1.x, vec2(-0.8090169943749475f, 0.587785252292473f).x, ((-fft_reg_1.y) * vec2(-0.8090169943749475f, 0.587785252292473f).y)), fma(fft_reg_1.x, vec2(-0.8090169943749475f, 0.587785252292473f).y, (fft_reg_1.y * vec2(-0.8090169943749475f, 0.587785252292473f).x)));
+    radix_register_3 += omega_register;
+    omega_register = vec2(fma(fft_reg_2.x, vec2(0.30901699437494773f, -0.9510565162951535f).x, ((-fft_reg_2.y) * vec2(0.30901699437494773f, -0.9510565162951535f).y)), fma(fft_reg_2.x, vec2(0.30901699437494773f, -0.9510565162951535f).y, (fft_reg_2.y * vec2(0.30901699437494773f, -0.9510565162951535f).x)));
+    radix_register_3 += omega_register;
+    omega_register = vec2(fma(fft_reg_3.x, vec2(0.309016994374947f, 0.9510565162951538f).x, ((-fft_reg_3.y) * vec2(0.309016994374947f, 0.9510565162951538f).y)), fma(fft_reg_3.x, vec2(0.309016994374947f, 0.9510565162951538f).y, (fft_reg_3.y * vec2(0.309016994374947f, 0.9510565162951538f).x)));
+    radix_register_3 += omega_register;
+    omega_register = vec2(fma(fft_reg_4.x, vec2(-0.8090169943749471f, -0.5877852522924736f).x, ((-fft_reg_4.y) * vec2(-0.8090169943749471f, -0.5877852522924736f).y)), fma(fft_reg_4.x, vec2(-0.8090169943749471f, -0.5877852522924736f).y, (fft_reg_4.y * vec2(-0.8090169943749471f, -0.5877852522924736f).x)));
+    radix_register_3 += omega_register;
+    radix_register_4 = fft_reg_0;
+    omega_register = vec2(fma(fft_reg_1.x, vec2(0.30901699437494723f, 0.9510565162951536f).x, ((-fft_reg_1.y) * vec2(0.30901699437494723f, 0.9510565162951536f).y)), fma(fft_reg_1.x, vec2(0.30901699437494723f, 0.9510565162951536f).y, (fft_reg_1.y * vec2(0.30901699437494723f, 0.9510565162951536f).x)));
+    radix_register_4 += omega_register;
+    omega_register = vec2(fma(fft_reg_2.x, vec2(-0.8090169943749477f, 0.5877852522924728f).x, ((-fft_reg_2.y) * vec2(-0.8090169943749477f, 0.5877852522924728f).y)), fma(fft_reg_2.x, vec2(-0.8090169943749477f, 0.5877852522924728f).y, (fft_reg_2.y * vec2(-0.8090169943749477f, 0.5877852522924728f).x)));
+    radix_register_4 += omega_register;
+    omega_register = vec2(fma(fft_reg_3.x, vec2(-0.8090169943749471f, -0.5877852522924736f).x, ((-fft_reg_3.y) * vec2(-0.8090169943749471f, -0.5877852522924736f).y)), fma(fft_reg_3.x, vec2(-0.8090169943749471f, -0.5877852522924736f).y, (fft_reg_3.y * vec2(-0.8090169943749471f, -0.5877852522924736f).x)));
+    radix_register_4 += omega_register;
+    omega_register = vec2(fma(fft_reg_4.x, vec2(0.3090169943749482f, -0.9510565162951533f).x, ((-fft_reg_4.y) * vec2(0.3090169943749482f, -0.9510565162951533f).y)), fma(fft_reg_4.x, vec2(0.3090169943749482f, -0.9510565162951533f).y, (fft_reg_4.y * vec2(0.3090169943749482f, -0.9510565162951533f).x)));
+    radix_register_4 += omega_register;
+    fft_reg_0 = radix_register_0;
+    fft_reg_1 = radix_register_1;
+    fft_reg_2 = radix_register_2;
+    fft_reg_3 = radix_register_3;
+    fft_reg_4 = radix_register_4;
 
-        uint round_accum = state ^ (round * 0x94d049bbu);
-        for (uint slot = 0u; slot < VALUES_PER_THREAD; ++slot) {
-            const uint src_lane = (lane * 17u + slot * 7u + round * 3u + 13u) & 63u;
-            const uint src_slot = (slot * 3u + lane + round) & 7u;
-            const uint observed = sdata[padded_index(src_lane * VALUES_PER_THREAD + src_slot)];
-            round_accum = mix_bits(round_accum
-                                   ^ observed
-                                   ^ ((src_lane + 1u) * 0x85ebca6bu)
-                                   ^ ((src_slot + 1u) * 0xc2b2ae35u));
-        }
+    io_index = tid * 5u;
+    sdata[io_index] = fft_reg_0;
+    io_index = tid * 5u + 1u;
+    sdata[io_index] = fft_reg_1;
+    io_index = tid * 5u + 2u;
+    sdata[io_index] = fft_reg_2;
+    io_index = tid * 5u + 3u;
+    sdata[io_index] = fft_reg_3;
+    io_index = tid * 5u + 4u;
+    sdata[io_index] = fft_reg_4;
+    SHARED_SYNC();
+    io_index = tid;
+    fft_reg_0 = sdata[io_index];
+    io_index = tid + 25u;
+    fft_reg_1 = sdata[io_index];
+    io_index = tid + 50u;
+    fft_reg_2 = sdata[io_index];
+    io_index = tid + 75u;
+    fft_reg_3 = sdata[io_index];
+    io_index = tid + 100u;
+    fft_reg_4 = sdata[io_index];
 
-        state = mix_bits(round_accum ^ 0x27d4eb2du ^ lane);
+    omega_register.x = float(-0.25132741228718347f) * float(tid % 5u);
+    omega_register = vec2(cos(omega_register.x), sin(omega_register.x));
+    radix_register_0 = vec2(fma(fft_reg_1.x, omega_register.x, ((-fft_reg_1.y) * omega_register.y)), fma(fft_reg_1.x, omega_register.y, (fft_reg_1.y * omega_register.x)));
+    fft_reg_1 = radix_register_0;
+    omega_register.x = float(-0.5026548245743669f) * float(tid % 5u);
+    omega_register = vec2(cos(omega_register.x), sin(omega_register.x));
+    radix_register_0 = vec2(fma(fft_reg_2.x, omega_register.x, ((-fft_reg_2.y) * omega_register.y)), fma(fft_reg_2.x, omega_register.y, (fft_reg_2.y * omega_register.x)));
+    fft_reg_2 = radix_register_0;
+    omega_register.x = float(-0.7539822368615503f) * float(tid % 5u);
+    omega_register = vec2(cos(omega_register.x), sin(omega_register.x));
+    radix_register_0 = vec2(fma(fft_reg_3.x, omega_register.x, ((-fft_reg_3.y) * omega_register.y)), fma(fft_reg_3.x, omega_register.y, (fft_reg_3.y * omega_register.x)));
+    fft_reg_3 = radix_register_0;
+    omega_register.x = float(-1.0053096491487339f) * float(tid % 5u);
+    omega_register = vec2(cos(omega_register.x), sin(omega_register.x));
+    radix_register_0 = vec2(fma(fft_reg_4.x, omega_register.x, ((-fft_reg_4.y) * omega_register.y)), fma(fft_reg_4.x, omega_register.y, (fft_reg_4.y * omega_register.x)));
+    fft_reg_4 = radix_register_0;
 
-        SHARED_SYNC();
-    }
+    radix_register_0 = fft_reg_0;
+    radix_register_0 += fft_reg_1;
+    radix_register_0 += fft_reg_2;
+    radix_register_0 += fft_reg_3;
+    radix_register_0 += fft_reg_4;
+    radix_register_1 = fft_reg_0;
+    omega_register = vec2(fma(fft_reg_1.x, vec2(0.30901699437494745f, -0.9510565162951535f).x, ((-fft_reg_1.y) * vec2(0.30901699437494745f, -0.9510565162951535f).y)), fma(fft_reg_1.x, vec2(0.30901699437494745f, -0.9510565162951535f).y, (fft_reg_1.y * vec2(0.30901699437494745f, -0.9510565162951535f).x)));
+    radix_register_1 += omega_register;
+    omega_register = vec2(fma(fft_reg_2.x, vec2(-0.8090169943749473f, -0.5877852522924732f).x, ((-fft_reg_2.y) * vec2(-0.8090169943749473f, -0.5877852522924732f).y)), fma(fft_reg_2.x, vec2(-0.8090169943749473f, -0.5877852522924732f).y, (fft_reg_2.y * vec2(-0.8090169943749473f, -0.5877852522924732f).x)));
+    radix_register_1 += omega_register;
+    omega_register = vec2(fma(fft_reg_3.x, vec2(-0.8090169943749475f, 0.587785252292473f).x, ((-fft_reg_3.y) * vec2(-0.8090169943749475f, 0.587785252292473f).y)), fma(fft_reg_3.x, vec2(-0.8090169943749475f, 0.587785252292473f).y, (fft_reg_3.y * vec2(-0.8090169943749475f, 0.587785252292473f).x)));
+    radix_register_1 += omega_register;
+    omega_register = vec2(fma(fft_reg_4.x, vec2(0.30901699437494723f, 0.9510565162951536f).x, ((-fft_reg_4.y) * vec2(0.30901699437494723f, 0.9510565162951536f).y)), fma(fft_reg_4.x, vec2(0.30901699437494723f, 0.9510565162951536f).y, (fft_reg_4.y * vec2(0.30901699437494723f, 0.9510565162951536f).x)));
+    radix_register_1 += omega_register;
+    radix_register_2 = fft_reg_0;
+    omega_register = vec2(fma(fft_reg_1.x, vec2(-0.8090169943749473f, -0.5877852522924732f).x, ((-fft_reg_1.y) * vec2(-0.8090169943749473f, -0.5877852522924732f).y)), fma(fft_reg_1.x, vec2(-0.8090169943749473f, -0.5877852522924732f).y, (fft_reg_1.y * vec2(-0.8090169943749473f, -0.5877852522924732f).x)));
+    radix_register_2 += omega_register;
+    omega_register = vec2(fma(fft_reg_2.x, vec2(0.30901699437494723f, 0.9510565162951536f).x, ((-fft_reg_2.y) * vec2(0.30901699437494723f, 0.9510565162951536f).y)), fma(fft_reg_2.x, vec2(0.30901699437494723f, 0.9510565162951536f).y, (fft_reg_2.y * vec2(0.30901699437494723f, 0.9510565162951536f).x)));
+    radix_register_2 += omega_register;
+    omega_register = vec2(fma(fft_reg_3.x, vec2(0.30901699437494773f, -0.9510565162951535f).x, ((-fft_reg_3.y) * vec2(0.30901699437494773f, -0.9510565162951535f).y)), fma(fft_reg_3.x, vec2(0.30901699437494773f, -0.9510565162951535f).y, (fft_reg_3.y * vec2(0.30901699437494773f, -0.9510565162951535f).x)));
+    radix_register_2 += omega_register;
+    omega_register = vec2(fma(fft_reg_4.x, vec2(-0.8090169943749477f, 0.5877852522924728f).x, ((-fft_reg_4.y) * vec2(-0.8090169943749477f, 0.5877852522924728f).y)), fma(fft_reg_4.x, vec2(-0.8090169943749477f, 0.5877852522924728f).y, (fft_reg_4.y * vec2(-0.8090169943749477f, 0.5877852522924728f).x)));
+    radix_register_2 += omega_register;
+    radix_register_3 = fft_reg_0;
+    omega_register = vec2(fma(fft_reg_1.x, vec2(-0.8090169943749475f, 0.587785252292473f).x, ((-fft_reg_1.y) * vec2(-0.8090169943749475f, 0.587785252292473f).y)), fma(fft_reg_1.x, vec2(-0.8090169943749475f, 0.587785252292473f).y, (fft_reg_1.y * vec2(-0.8090169943749475f, 0.587785252292473f).x)));
+    radix_register_3 += omega_register;
+    omega_register = vec2(fma(fft_reg_2.x, vec2(0.30901699437494773f, -0.9510565162951535f).x, ((-fft_reg_2.y) * vec2(0.30901699437494773f, -0.9510565162951535f).y)), fma(fft_reg_2.x, vec2(0.30901699437494773f, -0.9510565162951535f).y, (fft_reg_2.y * vec2(0.30901699437494773f, -0.9510565162951535f).x)));
+    radix_register_3 += omega_register;
+    omega_register = vec2(fma(fft_reg_3.x, vec2(0.309016994374947f, 0.9510565162951538f).x, ((-fft_reg_3.y) * vec2(0.309016994374947f, 0.9510565162951538f).y)), fma(fft_reg_3.x, vec2(0.309016994374947f, 0.9510565162951538f).y, (fft_reg_3.y * vec2(0.309016994374947f, 0.9510565162951538f).x)));
+    radix_register_3 += omega_register;
+    omega_register = vec2(fma(fft_reg_4.x, vec2(-0.8090169943749471f, -0.5877852522924736f).x, ((-fft_reg_4.y) * vec2(-0.8090169943749471f, -0.5877852522924736f).y)), fma(fft_reg_4.x, vec2(-0.8090169943749471f, -0.5877852522924736f).y, (fft_reg_4.y * vec2(-0.8090169943749471f, -0.5877852522924736f).x)));
+    radix_register_3 += omega_register;
+    radix_register_4 = fft_reg_0;
+    omega_register = vec2(fma(fft_reg_1.x, vec2(0.30901699437494723f, 0.9510565162951536f).x, ((-fft_reg_1.y) * vec2(0.30901699437494723f, 0.9510565162951536f).y)), fma(fft_reg_1.x, vec2(0.30901699437494723f, 0.9510565162951536f).y, (fft_reg_1.y * vec2(0.30901699437494723f, 0.9510565162951536f).x)));
+    radix_register_4 += omega_register;
+    omega_register = vec2(fma(fft_reg_2.x, vec2(-0.8090169943749477f, 0.5877852522924728f).x, ((-fft_reg_2.y) * vec2(-0.8090169943749477f, 0.5877852522924728f).y)), fma(fft_reg_2.x, vec2(-0.8090169943749477f, 0.5877852522924728f).y, (fft_reg_2.y * vec2(-0.8090169943749477f, 0.5877852522924728f).x)));
+    radix_register_4 += omega_register;
+    omega_register = vec2(fma(fft_reg_3.x, vec2(-0.8090169943749471f, -0.5877852522924736f).x, ((-fft_reg_3.y) * vec2(-0.8090169943749471f, -0.5877852522924736f).y)), fma(fft_reg_3.x, vec2(-0.8090169943749471f, -0.5877852522924736f).y, (fft_reg_3.y * vec2(-0.8090169943749471f, -0.5877852522924736f).x)));
+    radix_register_4 += omega_register;
+    omega_register = vec2(fma(fft_reg_4.x, vec2(0.3090169943749482f, -0.9510565162951533f).x, ((-fft_reg_4.y) * vec2(0.3090169943749482f, -0.9510565162951533f).y)), fma(fft_reg_4.x, vec2(0.3090169943749482f, -0.9510565162951533f).y, (fft_reg_4.y * vec2(0.3090169943749482f, -0.9510565162951533f).x)));
+    radix_register_4 += omega_register;
+    fft_reg_0 = radix_register_0;
+    fft_reg_1 = radix_register_1;
+    fft_reg_2 = radix_register_2;
+    fft_reg_3 = radix_register_3;
+    fft_reg_4 = radix_register_4;
 
-    output_buffer.data[gl_WorkGroupID.x * 64u + lane] = state;
+    SHARED_SYNC();
+    io_index = (tid * 5u) - ((tid % 5u) << 2u);
+    sdata[io_index] = fft_reg_0;
+    io_index = ((tid * 5u) - ((tid % 5u) << 2u)) + 5u;
+    sdata[io_index] = fft_reg_1;
+    io_index = ((tid * 5u) - ((tid % 5u) << 2u)) + 10u;
+    sdata[io_index] = fft_reg_2;
+    io_index = ((tid * 5u) - ((tid % 5u) << 2u)) + 15u;
+    sdata[io_index] = fft_reg_3;
+    io_index = ((tid * 5u) - ((tid % 5u) << 2u)) + 20u;
+    sdata[io_index] = fft_reg_4;
+    SHARED_SYNC();
+    io_index = tid;
+    fft_reg_0 = sdata[io_index];
+    io_index = tid + 25u;
+    fft_reg_1 = sdata[io_index];
+    io_index = tid + 50u;
+    fft_reg_2 = sdata[io_index];
+    io_index = tid + 75u;
+    fft_reg_3 = sdata[io_index];
+    io_index = tid + 100u;
+    fft_reg_4 = sdata[io_index];
+
+    omega_register.x = float(-0.05026548245743669f) * float(tid);
+    omega_register = vec2(cos(omega_register.x), sin(omega_register.x));
+    radix_register_0 = vec2(fma(fft_reg_1.x, omega_register.x, ((-fft_reg_1.y) * omega_register.y)), fma(fft_reg_1.x, omega_register.y, (fft_reg_1.y * omega_register.x)));
+    fft_reg_1 = radix_register_0;
+    omega_register.x = float(-0.10053096491487339f) * float(tid);
+    omega_register = vec2(cos(omega_register.x), sin(omega_register.x));
+    radix_register_0 = vec2(fma(fft_reg_2.x, omega_register.x, ((-fft_reg_2.y) * omega_register.y)), fma(fft_reg_2.x, omega_register.y, (fft_reg_2.y * omega_register.x)));
+    fft_reg_2 = radix_register_0;
+    omega_register.x = float(-0.15079644737231007f) * float(tid);
+    omega_register = vec2(cos(omega_register.x), sin(omega_register.x));
+    radix_register_0 = vec2(fma(fft_reg_3.x, omega_register.x, ((-fft_reg_3.y) * omega_register.y)), fma(fft_reg_3.x, omega_register.y, (fft_reg_3.y * omega_register.x)));
+    fft_reg_3 = radix_register_0;
+    omega_register.x = float(-0.20106192982974677f) * float(tid);
+    omega_register = vec2(cos(omega_register.x), sin(omega_register.x));
+    radix_register_0 = vec2(fma(fft_reg_4.x, omega_register.x, ((-fft_reg_4.y) * omega_register.y)), fma(fft_reg_4.x, omega_register.y, (fft_reg_4.y * omega_register.x)));
+    fft_reg_4 = radix_register_0;
+
+    radix_register_0 = fft_reg_0;
+    radix_register_0 += fft_reg_1;
+    radix_register_0 += fft_reg_2;
+    radix_register_0 += fft_reg_3;
+    radix_register_0 += fft_reg_4;
+    radix_register_1 = fft_reg_0;
+    omega_register = vec2(fma(fft_reg_1.x, vec2(0.30901699437494745f, -0.9510565162951535f).x, ((-fft_reg_1.y) * vec2(0.30901699437494745f, -0.9510565162951535f).y)), fma(fft_reg_1.x, vec2(0.30901699437494745f, -0.9510565162951535f).y, (fft_reg_1.y * vec2(0.30901699437494745f, -0.9510565162951535f).x)));
+    radix_register_1 += omega_register;
+    omega_register = vec2(fma(fft_reg_2.x, vec2(-0.8090169943749473f, -0.5877852522924732f).x, ((-fft_reg_2.y) * vec2(-0.8090169943749473f, -0.5877852522924732f).y)), fma(fft_reg_2.x, vec2(-0.8090169943749473f, -0.5877852522924732f).y, (fft_reg_2.y * vec2(-0.8090169943749473f, -0.5877852522924732f).x)));
+    radix_register_1 += omega_register;
+    omega_register = vec2(fma(fft_reg_3.x, vec2(-0.8090169943749475f, 0.587785252292473f).x, ((-fft_reg_3.y) * vec2(-0.8090169943749475f, 0.587785252292473f).y)), fma(fft_reg_3.x, vec2(-0.8090169943749475f, 0.587785252292473f).y, (fft_reg_3.y * vec2(-0.8090169943749475f, 0.587785252292473f).x)));
+    radix_register_1 += omega_register;
+    omega_register = vec2(fma(fft_reg_4.x, vec2(0.30901699437494723f, 0.9510565162951536f).x, ((-fft_reg_4.y) * vec2(0.30901699437494723f, 0.9510565162951536f).y)), fma(fft_reg_4.x, vec2(0.30901699437494723f, 0.9510565162951536f).y, (fft_reg_4.y * vec2(0.30901699437494723f, 0.9510565162951536f).x)));
+    radix_register_1 += omega_register;
+    radix_register_2 = fft_reg_0;
+    omega_register = vec2(fma(fft_reg_1.x, vec2(-0.8090169943749473f, -0.5877852522924732f).x, ((-fft_reg_1.y) * vec2(-0.8090169943749473f, -0.5877852522924732f).y)), fma(fft_reg_1.x, vec2(-0.8090169943749473f, -0.5877852522924732f).y, (fft_reg_1.y * vec2(-0.8090169943749473f, -0.5877852522924732f).x)));
+    radix_register_2 += omega_register;
+    omega_register = vec2(fma(fft_reg_2.x, vec2(0.30901699437494723f, 0.9510565162951536f).x, ((-fft_reg_2.y) * vec2(0.30901699437494723f, 0.9510565162951536f).y)), fma(fft_reg_2.x, vec2(0.30901699437494723f, 0.9510565162951536f).y, (fft_reg_2.y * vec2(0.30901699437494723f, 0.9510565162951536f).x)));
+    radix_register_2 += omega_register;
+    omega_register = vec2(fma(fft_reg_3.x, vec2(0.30901699437494773f, -0.9510565162951535f).x, ((-fft_reg_3.y) * vec2(0.30901699437494773f, -0.9510565162951535f).y)), fma(fft_reg_3.x, vec2(0.30901699437494773f, -0.9510565162951535f).y, (fft_reg_3.y * vec2(0.30901699437494773f, -0.9510565162951535f).x)));
+    radix_register_2 += omega_register;
+    omega_register = vec2(fma(fft_reg_4.x, vec2(-0.8090169943749477f, 0.5877852522924728f).x, ((-fft_reg_4.y) * vec2(-0.8090169943749477f, 0.5877852522924728f).y)), fma(fft_reg_4.x, vec2(-0.8090169943749477f, 0.5877852522924728f).y, (fft_reg_4.y * vec2(-0.8090169943749477f, 0.5877852522924728f).x)));
+    radix_register_2 += omega_register;
+    radix_register_3 = fft_reg_0;
+    omega_register = vec2(fma(fft_reg_1.x, vec2(-0.8090169943749475f, 0.587785252292473f).x, ((-fft_reg_1.y) * vec2(-0.8090169943749475f, 0.587785252292473f).y)), fma(fft_reg_1.x, vec2(-0.8090169943749475f, 0.587785252292473f).y, (fft_reg_1.y * vec2(-0.8090169943749475f, 0.587785252292473f).x)));
+    radix_register_3 += omega_register;
+    omega_register = vec2(fma(fft_reg_2.x, vec2(0.30901699437494773f, -0.9510565162951535f).x, ((-fft_reg_2.y) * vec2(0.30901699437494773f, -0.9510565162951535f).y)), fma(fft_reg_2.x, vec2(0.30901699437494773f, -0.9510565162951535f).y, (fft_reg_2.y * vec2(0.30901699437494773f, -0.9510565162951535f).x)));
+    radix_register_3 += omega_register;
+    omega_register = vec2(fma(fft_reg_3.x, vec2(0.309016994374947f, 0.9510565162951538f).x, ((-fft_reg_3.y) * vec2(0.309016994374947f, 0.9510565162951538f).y)), fma(fft_reg_3.x, vec2(0.309016994374947f, 0.9510565162951538f).y, (fft_reg_3.y * vec2(0.309016994374947f, 0.9510565162951538f).x)));
+    radix_register_3 += omega_register;
+    omega_register = vec2(fma(fft_reg_4.x, vec2(-0.8090169943749471f, -0.5877852522924736f).x, ((-fft_reg_4.y) * vec2(-0.8090169943749471f, -0.5877852522924736f).y)), fma(fft_reg_4.x, vec2(-0.8090169943749471f, -0.5877852522924736f).y, (fft_reg_4.y * vec2(-0.8090169943749471f, -0.5877852522924736f).x)));
+    radix_register_3 += omega_register;
+    radix_register_4 = fft_reg_0;
+    omega_register = vec2(fma(fft_reg_1.x, vec2(0.30901699437494723f, 0.9510565162951536f).x, ((-fft_reg_1.y) * vec2(0.30901699437494723f, 0.9510565162951536f).y)), fma(fft_reg_1.x, vec2(0.30901699437494723f, 0.9510565162951536f).y, (fft_reg_1.y * vec2(0.30901699437494723f, 0.9510565162951536f).x)));
+    radix_register_4 += omega_register;
+    omega_register = vec2(fma(fft_reg_2.x, vec2(-0.8090169943749477f, 0.5877852522924728f).x, ((-fft_reg_2.y) * vec2(-0.8090169943749477f, 0.5877852522924728f).y)), fma(fft_reg_2.x, vec2(-0.8090169943749477f, 0.5877852522924728f).y, (fft_reg_2.y * vec2(-0.8090169943749477f, 0.5877852522924728f).x)));
+    radix_register_4 += omega_register;
+    omega_register = vec2(fma(fft_reg_3.x, vec2(-0.8090169943749471f, -0.5877852522924736f).x, ((-fft_reg_3.y) * vec2(-0.8090169943749471f, -0.5877852522924736f).y)), fma(fft_reg_3.x, vec2(-0.8090169943749471f, -0.5877852522924736f).y, (fft_reg_3.y * vec2(-0.8090169943749471f, -0.5877852522924736f).x)));
+    radix_register_4 += omega_register;
+    omega_register = vec2(fma(fft_reg_4.x, vec2(0.3090169943749482f, -0.9510565162951533f).x, ((-fft_reg_4.y) * vec2(0.3090169943749482f, -0.9510565162951533f).y)), fma(fft_reg_4.x, vec2(0.3090169943749482f, -0.9510565162951533f).y, (fft_reg_4.y * vec2(0.3090169943749482f, -0.9510565162951533f).x)));
+    radix_register_4 += omega_register;
+    fft_reg_0 = radix_register_0;
+    fft_reg_1 = radix_register_1;
+    fft_reg_2 = radix_register_2;
+    fft_reg_3 = radix_register_3;
+    fft_reg_4 = radix_register_4;
+
+    output_batch_offset = workgroup_index * 125u;
+    io_index = tid + output_batch_offset;
+    buf1.data[io_index] = fft_reg_0;
+    io_index = tid + 25u + output_batch_offset;
+    buf1.data[io_index] = fft_reg_1;
+    io_index = tid + 50u + output_batch_offset;
+    buf1.data[io_index] = fft_reg_2;
+    io_index = tid + 75u + output_batch_offset;
+    buf1.data[io_index] = fft_reg_3;
+    io_index = tid + 100u + output_batch_offset;
+    buf1.data[io_index] = fft_reg_4;
 }

@@ -15,6 +15,7 @@ struct DeviceInfo {
   uint32_t api_version = 0;
   uint32_t driver_version = 0;
   bool has_portability_subset = false;
+  bool has_scalar_block_layout = false;
 };
 
 class VulkanContext {

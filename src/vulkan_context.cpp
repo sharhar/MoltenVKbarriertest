@@ -9,6 +9,7 @@ constexpr const char* kPortabilityEnumerationExtension = "VK_KHR_portability_enu
 constexpr const char* kGetPhysicalDeviceProperties2Extension =
     "VK_KHR_get_physical_device_properties2";
 constexpr const char* kPortabilitySubsetExtension = "VK_KHR_portability_subset";
+constexpr const char* kScalarBlockLayoutExtension = "VK_EXT_scalar_block_layout";
 
 bool HasExtension(const std::vector<VkExtensionProperties>& properties, const char* name) {
   for (const auto& property : properties) {
@@ -47,6 +48,13 @@ DeviceInfo QueryDeviceInfo(VkPhysicalDevice physical_device) {
   properties2.pNext = &driver_properties;
   vkGetPhysicalDeviceProperties2(physical_device, &properties2);
 
+  VkPhysicalDeviceScalarBlockLayoutFeatures scalar_block_layout{};
+  scalar_block_layout.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES;
+  VkPhysicalDeviceFeatures2 features2{};
+  features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+  features2.pNext = &scalar_block_layout;
+  vkGetPhysicalDeviceFeatures2(physical_device, &features2);
+
   uint32_t extension_count = 0;
   vkEnumerateDeviceExtensionProperties(physical_device, nullptr, &extension_count, nullptr);
   std::vector<VkExtensionProperties> extensions(extension_count);
@@ -64,6 +72,7 @@ DeviceInfo QueryDeviceInfo(VkPhysicalDevice physical_device) {
   info.api_version = properties2.properties.apiVersion;
   info.driver_version = properties2.properties.driverVersion;
   info.has_portability_subset = HasExtension(extensions, kPortabilitySubsetExtension);
+  info.has_scalar_block_layout = scalar_block_layout.scalarBlockLayout == VK_TRUE;
   return info;
 }
 }  // namespace
@@ -224,12 +233,51 @@ void VulkanContext::CreateDevice() {
     enabled_extensions.push_back(kPortabilitySubsetExtension);
   }
 
+  uint32_t extension_count = 0;
+  vkEnumerateDeviceExtensionProperties(physical_device_, nullptr, &extension_count, nullptr);
+  std::vector<VkExtensionProperties> extensions(extension_count);
+  if (extension_count > 0) {
+    vkEnumerateDeviceExtensionProperties(physical_device_, nullptr, &extension_count,
+                                         extensions.data());
+  }
+
+  VkPhysicalDeviceScalarBlockLayoutFeatures scalar_block_layout{};
+  scalar_block_layout.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES;
+  VkPhysicalDeviceFeatures2 features2{};
+  features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+  features2.pNext = &scalar_block_layout;
+  vkGetPhysicalDeviceFeatures2(physical_device_, &features2);
+
+  if (scalar_block_layout.scalarBlockLayout != VK_TRUE) {
+    throw std::runtime_error(
+        "Selected device does not support scalar block layout, which the FFT shader requires.");
+  }
+
+  const bool has_scalar_block_layout_extension =
+      HasExtension(extensions, kScalarBlockLayoutExtension);
+  if (selected_device_info_.api_version < VK_API_VERSION_1_2) {
+    if (!has_scalar_block_layout_extension) {
+      throw std::runtime_error(
+          "Selected device requires VK_EXT_scalar_block_layout, but the extension is absent.");
+    }
+    enabled_extensions.push_back(kScalarBlockLayoutExtension);
+  }
+
+  VkPhysicalDeviceFeatures2 enabled_features{};
+  enabled_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+  VkPhysicalDeviceScalarBlockLayoutFeatures enabled_scalar_block_layout{};
+  enabled_scalar_block_layout.sType =
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES;
+  enabled_scalar_block_layout.scalarBlockLayout = VK_TRUE;
+  enabled_features.pNext = &enabled_scalar_block_layout;
+
   VkDeviceCreateInfo create_info{};
   create_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
   create_info.queueCreateInfoCount = 1;
   create_info.pQueueCreateInfos = &queue_create_info;
   create_info.enabledExtensionCount = static_cast<uint32_t>(enabled_extensions.size());
   create_info.ppEnabledExtensionNames = enabled_extensions.data();
+  create_info.pNext = &enabled_features;
 
   if (vkCreateDevice(physical_device_, &create_info, nullptr, &device_) != VK_SUCCESS) {
     throw std::runtime_error("Failed to create Vulkan logical device.");

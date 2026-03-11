@@ -1,20 +1,20 @@
 # Expected Behavior
 
-This repro is checking a narrow synchronization claim: in a Vulkan GLSL compute shader, `barrier()` should be enough to make prior `shared` memory writes visible to other invocations in the same workgroup when control reaches the barrier in uniform flow.
+This repro is checking a narrow synchronization claim in a real FFT kernel: `barrier()` should be enough to make prior `shared` memory writes visible to other invocations in the same workgroup when control reaches the barrier in uniform flow.
 
-Because both shader variants run the same workgroup-shared-memory algorithm, they should produce identical output on a conformant implementation.
+Because both shader variants run the same FFT and are compared against the same reference output blob, they should produce identical output on a conformant implementation.
 
 # Why The Shader Pattern Is Stressful
 
-The shader intentionally mirrors a reduced reorder/transposition workload:
+The shader intentionally keeps the failing shared-memory structure from the FFT workload:
 
-- 64 lanes per workgroup
-- 8 values written per lane per round
-- padded shared-memory addressing with `idx = raw + (raw >> 4)`
-- cross-lane reads after synchronization
-- many repeated rounds with shared-memory reuse
+- 25 lanes per workgroup
+- 5 complex values per lane
+- shared-memory shuffles through `sdata[125]`
+- two shuffle stages plus an inter-stage barrier before shared-memory reuse
+- in-place writeback to the storage buffer
 
-This is still small enough to inspect, but it creates broad read-after-write dependencies across the workgroup and forces the backend to preserve shared-memory visibility repeatedly.
+This is still small enough to inspect, but it keeps the exact shuffle pattern that reproduced the bug.
 
 # Result Interpretation
 

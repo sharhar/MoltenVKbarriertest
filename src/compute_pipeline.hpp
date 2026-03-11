@@ -6,32 +6,34 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <span>
 #include <vector>
+
+struct ComplexValue {
+  float real = 0.0f;
+  float imag = 0.0f;
+};
 
 struct DispatchConfig {
   uint32_t workgroups = 0;
-  uint32_t rounds = 0;
 };
 
 class ComputePipeline {
  public:
   ComputePipeline(const VulkanContext& context,
                   const std::filesystem::path& shader_path,
-                  uint32_t output_words);
+                  uint32_t complex_value_count);
   ~ComputePipeline();
 
   ComputePipeline(const ComputePipeline&) = delete;
   ComputePipeline& operator=(const ComputePipeline&) = delete;
 
-  std::vector<uint32_t> Run(const DispatchConfig& config, bool verbose);
+  std::vector<ComplexValue> Run(const DispatchConfig& config,
+                                std::span<const ComplexValue> input_data);
   const SpirvInstructionSummary& spirv_summary() const { return spirv_summary_; }
   const std::filesystem::path& shader_path() const { return shader_path_; }
 
  private:
-  struct PushConstants {
-    uint32_t rounds = 0;
-  };
-
   const VulkanContext& context_;
   std::filesystem::path shader_path_;
   SpirvInstructionSummary spirv_summary_;

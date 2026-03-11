@@ -5,12 +5,12 @@
 
 ComputePipeline::ComputePipeline(const VulkanContext& context,
                                  const std::filesystem::path& shader_path,
-                                 uint32_t output_words)
+                                 uint32_t complex_value_count)
     : context_(context), shader_path_(shader_path) {
   output_buffer_ = CreateBuffer(
       context_.physical_device(),
       context_.device(),
-      static_cast<VkDeviceSize>(output_words) * sizeof(uint32_t),
+      static_cast<VkDeviceSize>(complex_value_count) * sizeof(ComplexValue),
       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
@@ -69,17 +69,10 @@ ComputePipeline::ComputePipeline(const VulkanContext& context,
   write.pBufferInfo = &buffer_info;
   vkUpdateDescriptorSets(context_.device(), 1, &write, 0, nullptr);
 
-  VkPushConstantRange push_constant_range{};
-  push_constant_range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-  push_constant_range.offset = 0;
-  push_constant_range.size = sizeof(PushConstants);
-
   VkPipelineLayoutCreateInfo pipeline_layout_info{};
   pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
   pipeline_layout_info.setLayoutCount = 1;
   pipeline_layout_info.pSetLayouts = &descriptor_set_layout_;
-  pipeline_layout_info.pushConstantRangeCount = 1;
-  pipeline_layout_info.pPushConstantRanges = &push_constant_range;
 
   if (vkCreatePipelineLayout(context_.device(), &pipeline_layout_info, nullptr,
                              &pipeline_layout_) != VK_SUCCESS) {
@@ -126,8 +119,13 @@ ComputePipeline::~ComputePipeline() {
   DestroyBuffer(context_.device(), output_buffer_);
 }
 
-std::vector<uint32_t> ComputePipeline::Run(const DispatchConfig& config, bool verbose) {
-  std::memset(output_buffer_.mapped, 0, static_cast<size_t>(output_buffer_.size));
+std::vector<ComplexValue> ComputePipeline::Run(const DispatchConfig& config,
+                                               std::span<const ComplexValue> input_data) {
+  if (input_data.size_bytes() != output_buffer_.size) {
+    throw std::runtime_error("Input blob size does not match the Vulkan storage buffer size.");
+  }
+
+  std::memcpy(output_buffer_.mapped, input_data.data(), input_data.size_bytes());
 
   VkCommandBufferAllocateInfo alloc_info{};
   alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -152,10 +150,6 @@ std::vector<uint32_t> ComputePipeline::Run(const DispatchConfig& config, bool ve
   vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_);
   vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_layout_, 0, 1,
                           &descriptor_set_, 0, nullptr);
-
-  const PushConstants push_constants{config.rounds};
-  vkCmdPushConstants(command_buffer, pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                     sizeof(PushConstants), &push_constants);
   vkCmdDispatch(command_buffer, config.workgroups, 1, 1);
 
   VkBufferMemoryBarrier host_barrier{};
@@ -193,7 +187,7 @@ std::vector<uint32_t> ComputePipeline::Run(const DispatchConfig& config, bool ve
 
   vkFreeCommandBuffers(context_.device(), context_.command_pool(), 1, &command_buffer);
 
-  const auto* words = static_cast<const uint32_t*>(output_buffer_.mapped);
-  const size_t word_count = static_cast<size_t>(output_buffer_.size / sizeof(uint32_t));
-  return std::vector<uint32_t>(words, words + word_count);
+  const auto* values = static_cast<const ComplexValue*>(output_buffer_.mapped);
+  const size_t value_count = static_cast<size_t>(output_buffer_.size / sizeof(ComplexValue));
+  return std::vector<ComplexValue>(values, values + value_count);
 }

@@ -1,17 +1,17 @@
 # Summary
 
-`barrier()` alone appears insufficient for `shared` memory synchronization in this compute shader on MoltenVK/macOS, while `memoryBarrier(); barrier()` produces correct output.
+`barrier()` alone appears insufficient for `shared` memory synchronization in this length-125 FFT compute shader on MoltenVK/macOS, while `memoryBarrier(); barrier()` produces correct output.
 
 # Expected Behavior
 
-Both shader variants should pass. The only intentional difference is the insertion of `memoryBarrier()` before `barrier()` at the shared-memory synchronization points. For workgroup-local `shared` memory accesses, `barrier()` should already be sufficient.
+Both shader variants should pass against the same reference output blob. The only intentional difference is the insertion of `memoryBarrier()` before `barrier()` at the shared-memory synchronization points.
 
 # Actual Behavior
 
 - `barrier_only`: [PASS/FAIL]
 - `memorybarrier_plus_barrier`: [PASS/FAIL]
 
-`barrier_only` shows mismatches against an exact CPU reference, while the workaround variant does not.
+`barrier_only` shows mismatches against the reference FFT output blob, while the workaround variant does not.
 
 # Environment
 
@@ -50,6 +50,7 @@ paste output here
 - GLSL source for both variants
 - `.spv` binaries
 - SPIR-V disassembly
+- input blob and reference output blob format details
 - optional generated MSL / Metal capture
 
 # Notes
