@@ -75,6 +75,12 @@ source "$VULKAN_SDK/setup-env.sh"
 ```
 
 3. Place the input and reference blobs under `data/` or pass their paths explicitly at runtime.
+   To generate them with NumPy:
+
+```bash
+python3 scripts/generate_fft_blobs.py
+```
+
 4. Build the repro.
 
 ```bash
