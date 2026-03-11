@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstring>
 #include <exception>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <limits>
@@ -55,6 +56,7 @@ struct Config {
     std::string referencePath = "../data/fft_875x125_reference.bin";
     std::string barrierOnlyShaderPath = "barrier_only.spv";
     std::string memoryBarrierShaderPath = "memory_barrier_then_barrier.spv";
+    std::string shaderDumpDir = "shader_dump";
     int iterations = kDefaultIterations;
     float absTolerance = kDefaultAbsTolerance;
     float relTolerance = kDefaultRelTolerance;
@@ -283,7 +285,7 @@ std::string usage() {
     return
         "Usage: ./barrier_test.exec [--input PATH] [--reference PATH] [--iterations N] "
         "[--abs-tol VALUE] [--rel-tol VALUE] [--barrier-only-spv PATH] "
-        "[--memory-and-barrier-spv PATH]\n\n"
+        "[--memory-and-barrier-spv PATH] [--shader-dump-dir PATH]\n\n"
         "Defaults:\n"
         "  --input ../data/fft_875x125_input.bin\n"
         "  --reference ../data/fft_875x125_reference.bin\n"
@@ -291,7 +293,8 @@ std::string usage() {
         "  --abs-tol 0.005\n"
         "  --rel-tol 0.0005\n"
         "  --barrier-only-spv barrier_only.spv\n"
-        "  --memory-and-barrier-spv memory_barrier_then_barrier.spv\n";
+        "  --memory-and-barrier-spv memory_barrier_then_barrier.spv\n"
+        "  --shader-dump-dir ./shader_dump\n";
 }
 
 Config parseArgs(int argc, char** argv) {
@@ -328,6 +331,10 @@ Config parseArgs(int argc, char** argv) {
             config.memoryBarrierShaderPath = nextValue();
             continue;
         }
+        if (flag == "--shader-dump-dir") {
+            config.shaderDumpDir = nextValue();
+            continue;
+        }
         if (flag == "--iterations") {
             config.iterations = std::stoi(nextValue());
             if (config.iterations <= 0) {
@@ -353,6 +360,24 @@ Config parseArgs(int argc, char** argv) {
     }
 
     return config;
+}
+
+std::string configureShaderDumpDir(const std::string& configuredPath) {
+    namespace fs = std::filesystem;
+
+    const fs::path dumpPath = fs::absolute(fs::path(configuredPath));
+    std::error_code errorCode;
+    fs::create_directories(dumpPath, errorCode);
+    if (errorCode) {
+        fail("Failed to create MoltenVK shader dump directory " + dumpPath.string() + ": " + errorCode.message() +
+             ".");
+    }
+
+    if (setenv("MVK_CONFIG_SHADER_DUMP_DIR", dumpPath.c_str(), 1) != 0) {
+        fail("Failed to set MVK_CONFIG_SHADER_DUMP_DIR to " + dumpPath.string() + ".");
+    }
+
+    return dumpPath.string();
 }
 
 std::size_t expectedByteCount() {
@@ -890,6 +915,9 @@ std::vector<IterationResult> runVariant(const VulkanContext& context,
 int main(int argc, char** argv) {
     try {
         const Config config = parseArgs(argc, argv);
+        const std::string shaderDumpDir = configureShaderDumpDir(config.shaderDumpDir);
+        std::cout << "=== Vulkan/MoltenVK FFT Barrier Bug Reproduction ===\n";
+        std::cout << "MoltenVK shader dump dir: " << shaderDumpDir << "\n" << std::flush;
         const std::vector<std::uint8_t> inputBytes = loadBinaryFile(
             config.inputPath, "Required input blob not found. Run: python3 generate_blobs.py --output-dir data");
         const std::vector<std::uint8_t> referenceBytes = loadBinaryFile(
@@ -904,7 +932,6 @@ int main(int argc, char** argv) {
         VkPhysicalDeviceProperties properties{};
         vkGetPhysicalDeviceProperties(context.physicalDevice, &properties);
 
-        std::cout << "=== Vulkan/MoltenVK FFT Barrier Bug Reproduction ===\n";
         std::cout << "Device: " << properties.deviceName << "\n";
         std::cout << "Vulkan API: " << formatApiVersion(properties.apiVersion) << "\n";
         std::cout << "Driver version: " << properties.driverVersion << "\n";

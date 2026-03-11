@@ -76,6 +76,8 @@ The Vulkan harness runs the same FFT workload through a GLSL compute shader comp
 - `barrier()`
 - `memoryBarrier(); barrier()`
 
+Before creating the Vulkan instance, the harness sets `MVK_CONFIG_SHADER_DUMP_DIR` to `vulkan/shader_dump/` by default so MoltenVK will emit the generated Metal shader sources there for inspection.
+
 Build and run:
 
 ```bash
@@ -96,7 +98,8 @@ cd vulkan
   --abs-tol 0.005 \
   --rel-tol 0.0005 \
   --barrier-only-spv barrier_only.spv \
-  --memory-and-barrier-spv memory_barrier_then_barrier.spv
+  --memory-and-barrier-spv memory_barrier_then_barrier.spv \
+  --shader-dump-dir ./shader_dump
 ```
 
 If the MoltenVK bug reproduces, the expected pattern is:
