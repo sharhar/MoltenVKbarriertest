@@ -8,9 +8,11 @@ private let defaultIterations = 10
 private let defaultAbsTolerance: Float = 5e-3
 private let defaultRelTolerance: Float = 5e-4
 private let mismatchPreviewLimit = 5
+private let defaultFunctionName = "main0"
 
 private struct Variant {
     let title: String
+    let sourcePath: String
     let functionName: String
 }
 
@@ -35,6 +37,8 @@ private struct IterationResult {
 private struct Config {
     var inputPath = "../data/fft_875x125_input.bin"
     var referencePath = "../data/fft_875x125_reference.bin"
+    var shaderDumpDir = "../vulkan/shader_dump"
+    var functionName = defaultFunctionName
     var iterations = defaultIterations
     var absTolerance = defaultAbsTolerance
     var relTolerance = defaultRelTolerance
@@ -43,10 +47,13 @@ private struct Config {
 private enum TestError: Error, CustomStringConvertible {
     case noMetalDevice
     case invalidArguments(String)
-    case libraryNotFound(String)
+    case shaderDumpDirNotFound(String)
+    case noDumpedShadersFound(String)
+    case shaderSourceReadFailed(path: String, reason: String)
+    case shaderCompileFailed(path: String, reason: String)
     case blobNotFound(String)
     case blobSizeMismatch(path: String, expectedBytes: Int, actualBytes: Int)
-    case functionNotFound(String)
+    case functionNotFound(path: String, name: String)
     case commandBufferFailed(String)
     case commandEncodingFailed(String)
 
@@ -56,14 +63,20 @@ private enum TestError: Error, CustomStringConvertible {
             return "No Metal device is available on this machine."
         case .invalidArguments(let message):
             return message
-        case .libraryNotFound(let path):
-            return "Failed to load Metal library at \(path). Build the project first with ./build.sh."
+        case .shaderDumpDirNotFound(let path):
+            return "Shader dump directory not found at \(path). Run the Vulkan repro first or pass --shader-dump-dir."
+        case .noDumpedShadersFound(let path):
+            return "No dumped Metal shaders were found in \(path). Expected one or more .metal files."
+        case .shaderSourceReadFailed(let path, let reason):
+            return "Failed to read dumped shader source at \(path): \(reason)"
+        case .shaderCompileFailed(let path, let reason):
+            return "Failed to compile dumped shader source at \(path): \(reason)"
         case .blobNotFound(let path):
             return "Required blob not found at \(path). Run: python3 generate_blobs.py --output-dir data"
         case .blobSizeMismatch(let path, let expectedBytes, let actualBytes):
             return "Blob size mismatch for \(path). Expected \(expectedBytes) bytes, got \(actualBytes)."
-        case .functionNotFound(let name):
-            return "Failed to find kernel function '\(name)' in default.metallib."
+        case .functionNotFound(let path, let name):
+            return "Failed to find kernel function '\(name)' in dumped shader \(path)."
         case .commandBufferFailed(let reason):
             return "GPU command buffer failed: \(reason)"
         case .commandEncodingFailed(let reason):
@@ -74,11 +87,13 @@ private enum TestError: Error, CustomStringConvertible {
 
 private func usage() -> String {
     """
-    Usage: ./barrier_test.exec [--input PATH] [--reference PATH] [--iterations N] [--abs-tol VALUE] [--rel-tol VALUE]
+    Usage: ./barrier_test.exec [--input PATH] [--reference PATH] [--shader-dump-dir PATH] [--function-name NAME] [--iterations N] [--abs-tol VALUE] [--rel-tol VALUE]
 
     Defaults:
       --input ../data/fft_875x125_input.bin
       --reference ../data/fft_875x125_reference.bin
+      --shader-dump-dir ../vulkan/shader_dump
+      --function-name \(defaultFunctionName)
       --iterations \(defaultIterations)
       --abs-tol \(defaultAbsTolerance)
       --rel-tol \(defaultRelTolerance)
@@ -106,6 +121,18 @@ private func parseArgs() throws -> Config {
                 throw TestError.invalidArguments("Missing value for --reference.\n\n\(usage())")
             }
             config.referencePath = value
+            args.removeFirst()
+        case "--shader-dump-dir":
+            guard let value = args.first else {
+                throw TestError.invalidArguments("Missing value for --shader-dump-dir.\n\n\(usage())")
+            }
+            config.shaderDumpDir = value
+            args.removeFirst()
+        case "--function-name":
+            guard let value = args.first, !value.isEmpty else {
+                throw TestError.invalidArguments("Invalid value for --function-name.\n\n\(usage())")
+            }
+            config.functionName = value
             args.removeFirst()
         case "--iterations":
             guard let value = args.first, let iterations = Int(value), iterations > 0 else {
@@ -201,15 +228,61 @@ private func refillBuffer(_ buffer: MTLBuffer, from data: Data) {
     }
 }
 
+private func discoverVariants(config: Config) throws -> [Variant] {
+    let directoryURL = URL(fileURLWithPath: config.shaderDumpDir, isDirectory: true)
+    var isDirectory: ObjCBool = false
+    guard FileManager.default.fileExists(atPath: directoryURL.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+        throw TestError.shaderDumpDirNotFound(directoryURL.path)
+    }
+
+    let candidates = try FileManager.default.contentsOfDirectory(
+        at: directoryURL,
+        includingPropertiesForKeys: [.isRegularFileKey],
+        options: [.skipsHiddenFiles]
+    )
+
+    let variants = candidates
+        .filter { $0.pathExtension == "metal" }
+        .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        .map {
+            Variant(
+                title: $0.lastPathComponent,
+                sourcePath: $0.path,
+                functionName: config.functionName
+            )
+        }
+
+    guard !variants.isEmpty else {
+        throw TestError.noDumpedShadersFound(directoryURL.path)
+    }
+
+    return variants
+}
+
+private func makeLibrary(device: MTLDevice, variant: Variant) throws -> MTLLibrary {
+    let source: String
+    do {
+        source = try String(contentsOfFile: variant.sourcePath, encoding: .utf8)
+    } catch {
+        throw TestError.shaderSourceReadFailed(path: variant.sourcePath, reason: error.localizedDescription)
+    }
+
+    do {
+        return try device.makeLibrary(source: source, options: nil)
+    } catch {
+        throw TestError.shaderCompileFailed(path: variant.sourcePath, reason: error.localizedDescription)
+    }
+}
+
 private func runVariant(device: MTLDevice,
                         queue: MTLCommandQueue,
-                        library: MTLLibrary,
                         variant: Variant,
                         inputData: Data,
                         reference: [Complex32],
                         config: Config) throws -> [IterationResult] {
+    let library = try makeLibrary(device: device, variant: variant)
     guard let function = library.makeFunction(name: variant.functionName) else {
-        throw TestError.functionNotFound(variant.functionName)
+        throw TestError.functionNotFound(path: variant.sourcePath, name: variant.functionName)
     }
 
     let pipeline = try device.makeComputePipelineState(function: function)
@@ -285,45 +358,29 @@ private func printSummary(results: [IterationResult]) {
     print("")
 }
 
-private func printConclusion(resultsByFunction: [String: [IterationResult]]) {
-    let threadgroupOnlyFailures = resultsByFunction["fft_875x125_threadgroup_only"]?.filter { $0.mismatchCount > 0 }.count ?? 0
-    let deviceThreadgroupFailures = resultsByFunction["fft_875x125_device_and_threadgroup"]?.filter { $0.mismatchCount > 0 }.count ?? 0
-    let allFlagsFailures = resultsByFunction["fft_875x125_all_flags"]?.filter { $0.mismatchCount > 0 }.count ?? 0
-
-    print("=== CONCLUSION ===")
-
-    if threadgroupOnlyFailures > 0 && deviceThreadgroupFailures == 0 && allFlagsFailures == 0 {
-        print("The FFT workload reproduces a synchronization failure with mem_threadgroup alone.")
-        print("Adding mem_device is sufficient to make the kernel match the NumPy reference on this machine.")
-    } else if threadgroupOnlyFailures == 0 && deviceThreadgroupFailures == 0 && allFlagsFailures == 0 {
-        print("This machine did not reproduce the barrier bug with the FFT workload.")
-        print("That is still useful data and may indicate hardware- or OS-specific behavior.")
-    } else {
-        print("Observed failure counts:")
-        print("  mem_threadgroup only: \(threadgroupOnlyFailures)")
-        print("  mem_device | mem_threadgroup: \(deviceThreadgroupFailures)")
-        print("  all flags: \(allFlagsFailures)")
-    }
-}
-
 private func main() throws {
     let config = try parseArgs()
     let expectedBytes = expectedByteCount()
 
-    print("=== Metal threadgroup_barrier FFT Bug Reproduction ===")
+    print("=== Metal Dumped Shader FFT Validation ===")
 
     guard let device = MTLCreateSystemDefaultDevice() else {
         throw TestError.noMetalDevice
     }
 
+    let variants = try discoverVariants(config: config)
+
     print("Device: \(device.name)")
     print("macOS: \(ProcessInfo.processInfo.operatingSystemVersionString)")
     print("FFT layout: \(fftCount) x \(fftLength)")
     print("Threads per threadgroup: \(threadsPerThreadgroup)")
-    print("Iterations per variant: \(config.iterations)")
+    print("Iterations per shader: \(config.iterations)")
     print("Tolerance: abs <= \(config.absTolerance), rel <= \(config.relTolerance)")
     print("Input blob: \(config.inputPath)")
     print("Reference blob: \(config.referencePath)")
+    print("Shader dump dir: \(config.shaderDumpDir)")
+    print("Kernel function: \(config.functionName)")
+    print("Discovered dumped shaders: \(variants.count)")
     print("Expected bytes per blob: \(expectedBytes)")
     print("")
 
@@ -331,41 +388,16 @@ private func main() throws {
         throw TestError.commandEncodingFailed("Unable to create Metal command queue.")
     }
 
-    let currentDirectory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-    let libraryURL = currentDirectory.appendingPathComponent("default.metallib")
-    guard FileManager.default.fileExists(atPath: libraryURL.path) else {
-        throw TestError.libraryNotFound(libraryURL.path)
-    }
-
-    let library = try device.makeLibrary(URL: libraryURL)
     let inputData = try loadBlob(at: config.inputPath)
     let referenceData = try loadBlob(at: config.referencePath)
     _ = try decodeComplexBlob(inputData, path: config.inputPath)
     let reference = try decodeComplexBlob(referenceData, path: config.referencePath)
-
-    let variants = [
-        Variant(
-            title: "threadgroup_barrier(mem_flags::mem_threadgroup)",
-            functionName: "fft_875x125_threadgroup_only"
-        ),
-        Variant(
-            title: "threadgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup)",
-            functionName: "fft_875x125_device_and_threadgroup"
-        ),
-        Variant(
-            title: "threadgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup | mem_flags::mem_texture)",
-            functionName: "fft_875x125_all_flags"
-        ),
-    ]
-
-    var resultsByFunction: [String: [IterationResult]] = [:]
 
     for (index, variant) in variants.enumerated() {
         print("--- Test \(index + 1): \(variant.title) ---")
         let results = try runVariant(
             device: device,
             queue: queue,
-            library: library,
             variant: variant,
             inputData: inputData,
             reference: reference,
@@ -377,10 +409,7 @@ private func main() throws {
         }
 
         printSummary(results: results)
-        resultsByFunction[variant.functionName] = results
     }
-
-    printConclusion(resultsByFunction: resultsByFunction)
 }
 
 do {

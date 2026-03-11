@@ -4,6 +4,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
+mkdir -p shader_dump
+
 glslangValidator -V -S comp -DBARRIER_MODE=0 barrier_test.comp -o barrier_only.spv
 glslangValidator -V -S comp -DBARRIER_MODE=1 barrier_test.comp -o memory_barrier_then_barrier.spv
 
