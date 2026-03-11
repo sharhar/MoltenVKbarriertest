@@ -918,6 +918,12 @@ int main(int argc, char** argv) {
         const std::string shaderDumpDir = configureShaderDumpDir(config.shaderDumpDir);
         std::cout << "=== Vulkan/MoltenVK FFT Barrier Bug Reproduction ===\n";
         std::cout << "MoltenVK shader dump dir: " << shaderDumpDir << "\n" << std::flush;
+        if (const char* managedIcd = std::getenv("VULKAN_MOLTENVK_ICD_JSON")) {
+            std::cout << "Managed MoltenVK ICD: " << managedIcd << "\n";
+        }
+        if (const char* managedGlslang = std::getenv("VULKAN_GLSLANG_VALIDATOR")) {
+            std::cout << "Managed glslangValidator: " << managedGlslang << "\n";
+        }
         const std::vector<std::uint8_t> inputBytes = loadBinaryFile(
             config.inputPath, "Required input blob not found. Run: python3 generate_blobs.py --output-dir data");
         const std::vector<std::uint8_t> referenceBytes = loadBinaryFile(

@@ -98,7 +98,7 @@ Build and run:
 python3 generate_blobs.py --output-dir data
 cd vulkan
 ./build.sh
-./barrier_test.exec
+./run.sh
 ```
 
 Expected result on the currently investigated machine:
@@ -107,6 +107,37 @@ Expected result on the currently investigated machine:
 - `memoryBarrier(); barrier()`: passes
 
 The Vulkan harness sets `MVK_CONFIG_SHADER_DUMP_DIR` so MoltenVK emits its generated Metal shaders into `vulkan/shader_dump/`.
+
+### Selecting MoltenVK and glslang versions
+
+The Vulkan harness can now be pointed at a specific MoltenVK git ref and the matching or overridden glslang compiler version.
+
+Default behavior is unchanged:
+
+- if you do nothing, `vulkan/build.sh` uses `glslangValidator` from `PATH`
+- if you do nothing, `vulkan/run.sh` uses the system Vulkan loader's normal ICD discovery
+
+Managed toolchain workflow:
+
+```bash
+cd vulkan
+./select_toolchain.sh --moltenvk-ref <tag-or-commit>
+./build.sh
+./run.sh
+```
+
+Explicit glslang override:
+
+```bash
+cd vulkan
+./select_toolchain.sh --moltenvk-ref <tag-or-commit> --glslang-ref <tag-or-commit>
+./build.sh
+./run.sh
+```
+
+The selector stores the active choice in `build/vulkan-toolchain.env` and `build/vulkan-toolchain.json`.
+`build.sh` uses the managed `glslangValidator` when one is selected, and `run.sh` exports `VK_DRIVER_FILES` and
+`VK_ICD_FILENAMES` to point the Vulkan loader at the generated MoltenVK ICD JSON for the selected build.
 
 ### 3. Native Metal From MoltenVK Shader Dumps
 
@@ -182,7 +213,7 @@ Run Vulkan / MoltenVK:
 ```bash
 cd vulkan
 ./build.sh
-./barrier_test.exec
+./run.sh
 ```
 
 Run native Metal on dumped MSL:

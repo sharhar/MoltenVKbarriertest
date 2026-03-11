@@ -10,7 +10,11 @@ run_target() {
     (
         cd "${SCRIPT_DIR}/${target_dir}"
         ./build.sh
-        ./barrier_test.exec
+        if [[ "${target_dir}" == "vulkan" ]]; then
+            ./run.sh
+        else
+            ./barrier_test.exec
+        fi
     )
     echo
 }
