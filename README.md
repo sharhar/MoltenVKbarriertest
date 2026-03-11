@@ -1,10 +1,10 @@
 # `threadgroup_barrier(mem_flags::mem_threadgroup)` FFT Synchronization Repro
 
-This repository is organized around a shared FFT test corpus plus backend-specific harnesses. The current implementation lives under `metal/` and exercises a 125-point FFT kernel that intermittently miscomputes when it uses `threadgroup_barrier(mem_flags::mem_threadgroup)` at its shared-memory synchronization points. The same kernel becomes stable when the barrier flags also include `mem_device`.
+This repository is organized around a shared FFT test corpus plus backend-specific harnesses. It exercises a 125-point FFT kernel that intermittently miscomputes on macOS when the shader relies on the weaker shared-memory barrier form. The Metal backend shows the issue via `threadgroup_barrier(mem_flags::mem_threadgroup)`, and the Vulkan backend mirrors the same workload through GLSL/SPIR-V on MoltenVK.
 
 ## Context
 
-The original issue was found through Vulkan on macOS via MoltenVK and SPIRV-Cross. The repository is now arranged so multiple backends can run the same input and reference blobs and be compared directly. Only the Metal backend exists today.
+The original issue was found through Vulkan on macOS via MoltenVK and SPIRV-Cross. The repository is arranged so multiple backends can run the same input and reference blobs and be compared directly.
 
 The workload performs 875 independent FFTs of length 125 over contiguous complex input data. Each workgroup has 25 threads and uses shared memory for the two internal data reorders between radix-5 stages.
 
@@ -13,7 +13,7 @@ The workload performs 875 independent FFTs of length 125 over contiguous complex
 - `data/`: shared input and reference blobs.
 - `generate_blobs.py`: writes the shared input and reference blobs in the binary layout expected by backend harnesses.
 - `metal/`: Metal-specific shader, host harness, and build script.
-- `vulkan/`: reserved for a future Vulkan/MoltenVK harness. Nothing is there yet.
+- `vulkan/`: Vulkan/MoltenVK host harness, GLSL shader, SPIR-V build script.
 
 ## Shared data layout
 
@@ -68,6 +68,41 @@ If the bug reproduces, the expected pattern is:
 - `mem_threadgroup` only: intermittent FAIL
 - `mem_device | mem_threadgroup`: PASS
 - `mem_device | mem_threadgroup | mem_texture`: PASS
+
+## Vulkan backend
+
+The Vulkan harness runs the same FFT workload through a GLSL compute shader compiled to SPIR-V and loaded from disk at runtime by the C++ executable. It tests exactly two synchronization variants:
+
+- `barrier()`
+- `memoryBarrier(); barrier()`
+
+Build and run:
+
+```bash
+python3 generate_blobs.py --output-dir data
+cd vulkan
+./build.sh
+./barrier_test.exec
+```
+
+Override paths and tolerances if needed:
+
+```bash
+cd vulkan
+./barrier_test.exec \
+  --input ../data/fft_875x125_input.bin \
+  --reference ../data/fft_875x125_reference.bin \
+  --iterations 20 \
+  --abs-tol 0.005 \
+  --rel-tol 0.0005 \
+  --barrier-only-spv barrier_only.spv \
+  --memory-and-barrier-spv memory_barrier_then_barrier.spv
+```
+
+If the MoltenVK bug reproduces, the expected pattern is:
+
+- `barrier()` only: intermittent FAIL
+- `memoryBarrier(); barrier()`: PASS
 
 ## Environment to report
 

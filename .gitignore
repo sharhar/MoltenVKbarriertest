@@ -5,6 +5,7 @@
 *.air
 *.metallib
 *.exec
+*.spv
 *.bin
 .clang-module-cache/
 .swift-module-cache/
