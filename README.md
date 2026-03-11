@@ -1,23 +1,54 @@
-# `threadgroup_barrier(mem_flags::mem_threadgroup)` FFT Synchronization Repro
+# MoltenVK FFT Barrier Repro
 
-This repository is organized around a shared FFT test corpus plus backend-specific harnesses. It exercises a 125-point FFT kernel that intermittently miscomputes on macOS when the shader relies on the weaker shared-memory barrier form. The Metal backend shows the issue via `threadgroup_barrier(mem_flags::mem_threadgroup)`, and the Vulkan backend mirrors the same workload through GLSL/SPIR-V on MoltenVK.
+This repository reproduces a synchronization-related correctness bug seen only through the Vulkan-on-macOS path.
 
-## Context
+The workload is a batch FFT of length 125 over contiguous `complex64` data:
 
-The original issue was found through Vulkan on macOS via MoltenVK and SPIRV-Cross. The repository is arranged so multiple backends can run the same input and reference blobs and be compared directly.
+- 875 independent FFTs
+- FFT length 125
+- 25 threads per workgroup
+- shared/threadgroup memory used for the two internal data reorders between radix-5 stages
 
-The workload performs 875 independent FFTs of length 125 over contiguous complex input data. Each workgroup has 25 threads and uses shared memory for the two internal data reorders between radix-5 stages.
+## Current conclusion
+
+The bug is not reproduced by native Metal.
+
+It is reproduced by Vulkan through MoltenVK when the GLSL shader uses `barrier()` alone, and it disappears when the GLSL shader uses `memoryBarrier(); barrier()`.
+
+The strongest narrowing result in this repo is:
+
+1. Native Metal with the handwritten shader passes for all barrier flag variants.
+2. Vulkan through MoltenVK fails with `barrier()` but passes with `memoryBarrier(); barrier()`.
+3. Native Metal execution of the exact dumped MSL shaders emitted by MoltenVK also passes.
+
+That means the bug is very likely not in the FFT algorithm itself, and not in the visible generated MSL source by itself. The failure appears to exist specifically in the Vulkan-to-Metal execution path, making MoltenVK the most likely place to file the bug first.
+
+## Why this repo exists
+
+At first glance, the Vulkan-generated MSL dumps look like they should explain the behavior:
+
+- the `barrier()`-only Vulkan shader lowers to `threadgroup_barrier(mem_flags::mem_threadgroup)`
+- the `memoryBarrier(); barrier()` Vulkan shader lowers to `threadgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup | mem_flags::mem_texture)`
+
+However, compiling and running those dumped `.metal` files directly through a native Metal harness does not reproduce the failure. So the problem is narrower than "the generated MSL text is wrong".
+
+The remaining plausible fault domains are things inside the active MoltenVK Vulkan path, such as:
+
+- internal pipeline compilation details not visible in the dumped source
+- MoltenVK runtime handling of synchronization semantics
+- some command encoding or execution detail specific to the Vulkan path
 
 ## Repository layout
 
-- `data/`: shared input and reference blobs.
-- `generate_blobs.py`: writes the shared input and reference blobs in the binary layout expected by backend harnesses.
-- `metal/`: Metal-specific shader, host harness, and build script.
-- `vulkan/`: Vulkan/MoltenVK host harness, GLSL shader, SPIR-V build script.
+- `data/`: shared input and reference blobs
+- `generate_blobs.py`: generates the shared FFT input and NumPy reference output
+- `metal/`: native Metal shader and harness
+- `vulkan/`: Vulkan/MoltenVK GLSL shader, SPIR-V binaries, and Vulkan harness
+- `metal_from_dumps/`: native Metal harness that loads and executes the dumped MSL shaders from `vulkan/shader_dump/`
 
 ## Shared data layout
 
-`generate_blobs.py` generates:
+`generate_blobs.py` writes:
 
 - input shape `(875, 125)` of `complex64`
 - reference output `np.fft.fft(input_data, axis=-1).astype(np.complex64)`
@@ -25,15 +56,19 @@ The workload performs 875 independent FFTs of length 125 over contiguous complex
 
 Each blob is `875 * 125 * 8 = 875000` bytes.
 
-## Metal backend
+## Harnesses
 
-The Metal harness builds and runs three kernels that differ only in barrier flags:
+### 1. Native Metal
+
+The Metal shader is in `metal/barrier_test.metal`.
+
+It builds three kernels that differ only in barrier flags:
 
 - `fft_875x125_threadgroup_only`
 - `fft_875x125_device_and_threadgroup`
 - `fft_875x125_all_flags`
 
-All three kernels use the same FFT arithmetic, the same 25-thread workgroup shape, and the same three shared-memory barrier sites.
+All three kernels use the same FFT arithmetic and the same three barrier sites.
 
 Build and run:
 
@@ -44,40 +79,19 @@ cd metal
 ./barrier_test.exec
 ```
 
-Override paths and tolerances if needed:
+Expected result on the currently investigated machine:
 
-```bash
-cd metal
-./barrier_test.exec \
-  --input ../data/fft_875x125_input.bin \
-  --reference ../data/fft_875x125_reference.bin \
-  --iterations 20 \
-  --abs-tol 0.005 \
-  --rel-tol 0.0005
-```
+- all three Metal variants pass
 
-The harness prints:
+### 2. Vulkan / MoltenVK
 
-- mismatch count per iteration
-- first few mismatched FFT bins
-- maximum absolute complex error
-- PASS/FAIL summary across all iterations
+The Vulkan shader source is `vulkan/barrier_test.comp`.
 
-If the bug reproduces, the expected pattern is:
+It builds two SPIR-V variants:
 
-- `mem_threadgroup` only: intermittent FAIL
-- `mem_device | mem_threadgroup`: PASS
-- `mem_device | mem_threadgroup | mem_texture`: PASS
-
-## Vulkan backend
-
-The Vulkan harness runs the same FFT workload through a GLSL compute shader compiled to SPIR-V and loaded from disk at runtime by the C++ executable. It tests exactly two synchronization variants:
-
-- `barrier()`
+- `barrier()` only
 - `memoryBarrier(); barrier()`
 
-Before creating the Vulkan instance, the harness sets `MVK_CONFIG_SHADER_DUMP_DIR` to `vulkan/shader_dump/` by default so MoltenVK will emit the generated Metal shader sources there for inspection.
-
 Build and run:
 
 ```bash
@@ -87,41 +101,94 @@ cd vulkan
 ./barrier_test.exec
 ```
 
-Override paths and tolerances if needed:
+Expected result on the currently investigated machine:
+
+- `barrier()` only: fails
+- `memoryBarrier(); barrier()`: passes
+
+The Vulkan harness sets `MVK_CONFIG_SHADER_DUMP_DIR` so MoltenVK emits its generated Metal shaders into `vulkan/shader_dump/`.
+
+### 3. Native Metal From MoltenVK Shader Dumps
+
+This harness exists specifically to answer the question: "does the failure reproduce if the dumped MSL is compiled and run directly through Metal?"
+
+It loads all `.metal` files from `../vulkan/shader_dump/`, compiles them at runtime, runs `main0`, and validates the output against the shared FFT reference.
+
+Build and run:
+
+```bash
+cd metal_from_dumps
+./build.sh
+./barrier_test.exec
+```
+
+Expected result on the currently investigated machine:
+
+- both dumped MSL shaders pass
+
+## Current observed results
+
+On the currently tested machine:
+
+- hardware: Apple M2 Pro
+- macOS: 15.7.4 (Build 24G517)
+
+Observed behavior:
+
+- `metal/`: all variants pass
+- `vulkan/`: `barrier()` fails, `memoryBarrier(); barrier()` passes
+- `metal_from_dumps/`: both dumped shaders pass
+
+This is the core evidence that the bug only exists in the Vulkan/MoltenVK path.
+
+## Interpreting the barrier behavior
+
+The kernel only uses shared/threadgroup memory for inter-thread communication during the FFT reorders. It does not require cross-workgroup communication, and its final buffer writes happen after those reorder stages are complete.
+
+Because of that, the most suspicious symptom is:
+
+- Vulkan `barrier()` alone behaves as if the workgroup-memory synchronization is insufficient in practice
+- but native Metal `threadgroup_barrier(mem_flags::mem_threadgroup)` behaves correctly for equivalent code
+
+That mismatch is exactly why this repo is useful for a MoltenVK bug report.
+
+## Suggested bug-report summary
+
+If you file this with MoltenVK, the short version is:
+
+1. A GLSL compute shader for a 125-point batched FFT fails on macOS through MoltenVK when using `barrier()` alone.
+2. Adding `memoryBarrier(); barrier()` makes the Vulkan path correct.
+3. Native Metal does not fail, even when compiling and executing the exact `.metal` shader dumps emitted by MoltenVK.
+4. Therefore the failure seems specific to the active MoltenVK Vulkan execution path, not to the FFT algorithm and not to the visible emitted MSL source alone.
+
+## Commands
+
+Generate the shared blobs:
+
+```bash
+python3 generate_blobs.py --output-dir data
+```
+
+Run native Metal:
+
+```bash
+cd metal
+./build.sh
+./barrier_test.exec
+```
+
+Run Vulkan / MoltenVK:
 
 ```bash
 cd vulkan
-./barrier_test.exec \
-  --input ../data/fft_875x125_input.bin \
-  --reference ../data/fft_875x125_reference.bin \
-  --iterations 20 \
-  --abs-tol 0.005 \
-  --rel-tol 0.0005 \
-  --barrier-only-spv barrier_only.spv \
-  --memory-and-barrier-spv memory_barrier_then_barrier.spv \
-  --shader-dump-dir ./shader_dump
+./build.sh
+./barrier_test.exec
 ```
 
-If the MoltenVK bug reproduces, the expected pattern is:
+Run native Metal on dumped MSL:
 
-- `barrier()` only: intermittent FAIL
-- `memoryBarrier(); barrier()`: PASS
-
-## Environment to report
-
-When sharing results, include:
-
-- macOS version
-- hardware platform (Apple Silicon or Intel + discrete GPU)
-- GPU model
-- Metal GPU family, if known
-- Xcode version or Command Line Tools version
-
-## Metal Shading Language reference
-
-Apple's official Metal resources page links the current Metal Shading Language Specification PDF:
-
-- [Metal resources](https://developer.apple.com/metal/resources/)
-- [Metal Shading Language Specification PDF](https://developer.apple.com/metal/Metal-Shading-Language-Specification.pdf)
-
-The relevant part of the specification is the section on threadgroup and SIMD-group synchronization functions and the `mem_flags` table for barrier functions. Apple documents `threadgroup_barrier` as an execution and memory barrier, and documents `mem_flags::mem_threadgroup` as ordering memory operations to threadgroup memory for threads in a threadgroup. This repro checks whether that documented behavior holds for the FFT kernel's shared-memory stages.
+```bash
+cd metal_from_dumps
+./build.sh
+./barrier_test.exec
+```
