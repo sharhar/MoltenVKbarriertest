@@ -83,12 +83,6 @@ ensure_worktree() {
     fi
 }
 
-cmake_generator_args() {
-    if command -v ninja >/dev/null 2>&1; then
-        printf '%s\n' "-G" "Ninja"
-    fi
-}
-
 find_glslang_validator() {
     local search_dir="$1"
     local candidate
@@ -103,13 +97,33 @@ find_glslang_validator() {
     return 1
 }
 
+prepare_glslang_sources() {
+    local glslang_worktree="$1"
+
+    if [[ -f "${glslang_worktree}/update_glslang_sources.py" ]]; then
+        (
+            cd "${glslang_worktree}"
+            python3 ./update_glslang_sources.py
+        )
+    fi
+
+    if [[ -f "${glslang_worktree}/build_info.py" && -f "${glslang_worktree}/build_info.h.tmpl" ]]; then
+        (
+            cd "${glslang_worktree}"
+            mkdir -p build/include/glslang
+            python3 ./build_info.py . \
+                -i build_info.h.tmpl \
+                -o build/include/glslang/build_info.h
+        )
+    fi
+}
+
 build_glslang_validator() {
     local glslang_worktree="$1"
     local glslang_commit="$2"
     local pair_dir="$3"
     local output_bin="${pair_dir}/tools/glslangValidator"
     local build_dir="${glslang_worktree}/codex-build-${glslang_commit:0:12}"
-    local generator_args=()
     local built_bin=""
 
     if [[ -x "${output_bin}" ]]; then
@@ -118,10 +132,14 @@ build_glslang_validator() {
     fi
 
     ensure_dir "${pair_dir}/tools"
-    mapfile -t generator_args < <(cmake_generator_args)
+    prepare_glslang_sources "${glslang_worktree}"
 
-    cmake -S "${glslang_worktree}" -B "${build_dir}" "${generator_args[@]}" -DCMAKE_BUILD_TYPE=Release
-    cmake --build "${build_dir}" --target glslangValidator
+    if command -v ninja >/dev/null 2>&1; then
+        cmake -S "${glslang_worktree}" -B "${build_dir}" -G Ninja -DCMAKE_BUILD_TYPE=Release || fail "Failed to configure glslang with CMake in ${build_dir}"
+    else
+        cmake -S "${glslang_worktree}" -B "${build_dir}" -DCMAKE_BUILD_TYPE=Release || fail "Failed to configure glslang with CMake in ${build_dir}"
+    fi
+    cmake --build "${build_dir}" --target glslangValidator || fail "Failed to build glslangValidator in ${build_dir}"
 
     built_bin="$(find_glslang_validator "${build_dir}")" || fail "Failed to locate built glslangValidator under ${build_dir}"
     cp -f "${built_bin}" "${output_bin}"
@@ -140,7 +158,7 @@ build_moltenvk() {
     local quoted_dylib_path=""
 
     if [[ -f "${output_dylib}" && -f "${output_icd}" ]]; then
-        printf '%s\n%s\n' "${output_dylib}" "${output_icd}"
+        printf '%s|%s\n' "${output_dylib}" "${output_icd}"
         return 0
     fi
 
@@ -169,7 +187,7 @@ build_moltenvk() {
 }
 EOF
 
-    printf '%s\n%s\n' "${output_dylib}" "${output_icd}"
+    printf '%s|%s\n' "${output_dylib}" "${output_icd}"
 }
 
 write_state_files() {
@@ -341,9 +359,9 @@ ensure_worktree "${GLSLANG_REPO}" "${GLSLANG_COMMIT}" "${GLSLANG_WORKTREE}"
 ensure_worktree "${MOLTENVK_REPO}" "${MOLTENVK_COMMIT}" "${MOLTENVK_WORKTREE}"
 
 GLSLANG_VALIDATOR_PATH="$(build_glslang_validator "${GLSLANG_WORKTREE}" "${GLSLANG_COMMIT}" "${PAIR_DIR}")"
-mapfile -t moltenvk_outputs < <(build_moltenvk "${MOLTENVK_WORKTREE}" "${GLSLANG_WORKTREE}" "${PAIR_DIR}")
-MOLTENVK_DYLIB_PATH="${moltenvk_outputs[0]}"
-MOLTENVK_ICD_JSON_PATH="${moltenvk_outputs[1]}"
+IFS='|' read -r MOLTENVK_DYLIB_PATH MOLTENVK_ICD_JSON_PATH <<EOF
+$(build_moltenvk "${MOLTENVK_WORKTREE}" "${GLSLANG_WORKTREE}" "${PAIR_DIR}")
+EOF
 
 write_state_files \
     "${MOLTENVK_REF}" \
