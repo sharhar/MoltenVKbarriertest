@@ -9,9 +9,24 @@ The workload is a batch FFT of length 125 over contiguous `complex64` data:
 - 25 threads per workgroup
 - shared/threadgroup memory used for the two internal data reorders between radix-5 stages
 
+A FFT vulkan compute shader is provided in `vulkan/shaders/barrier_test.comp`, which is compiled to SPIR-V and then translated to MSL by MoltenVK. The test compares the output of the shader against a NumPy reference implementation, and also dumps the generated SPIR-V and MSL shaders for inspection.
+
+When the shader uses `barrier()` alone for synchronization, the test fails with many mismatches and large errors compared to the reference. When a `memoryBarrier();` call is added before each `barrier()`, the test passes with no mismatches. The generated SPIR-V and MSL shaders show that the `memoryBarrier();` call gets translated to a `atomic_thread_fence(mem_flags::mem_device, memory_order_seq_cst, thread_scope_device);` call in MSL and the `barrier()` calls gets translated to `threadgroup_barrier(mem_flags::mem_threadgroup);`.
+
+In theory, the `barrier()` call alone should be sufficient for synchronization in this shader since all threads in the workgroup execute the same code path and there are no visible memory accesses that need to be synchronized across threads. The fact that adding `memoryBarrier();` before `barrier()` makes the test pass indicates a bug in the Vulkan/MoltenVK synchronization implementation where the control barrier is not properly synchronizing memory accesses across threads without an explicit memory barrier.
+
+To isolate whether the bug is in the generated MSL shader or in the Vulkan/MoltenVK path, the dumped MSL shaders are run through a native Metal harness provided in `metal/` that runs the same test using the dumped MSL source (by setting the `MVK_CONFIG_SHADER_DUMP_DIR` environment variable). Both shaders pass in the native Metal harness, indicating that the bug is specific to the Vulkan/MoltenVK runtime and not to the SPIR-V to MSL transpiler.
+
 ## Reproduction steps
 
-First, generate the binary input and output reference blobs using the provided Python script:
+First, clone and enter the repository:
+
+```bash
+git clone https://github.com/sharhar/MoltenVKbarriertest.git
+cd MoltenVKbarriertest
+```
+
+Next, generate the binary input and output reference blobs using the provided Python script:
 
 ```bash
 python3 generate_blobs.py --output-dir data
@@ -20,7 +35,7 @@ python3 generate_blobs.py --output-dir data
 By default, the test will automatically use the installed Vulkan loader and `glslangValidator` from `PATH`, but for reproducibility and to ensure the right MoltenVK version is used, you can select a specific MoltenVK git ref and the matching glslang compiler version:
 
 ```bash
-# Current commit in the main branch in MOltenVK as of 2026-03-11, and version 16.2.0 of glslang
+# Current commit in the main branch in MoltenVK as of 2026-03-11, and version 16.2.0 of glslang
 bash vulkan/select_toolchain.sh \
   --moltenvk-ref f79c6c5690d3ee06ec3a00d11a8b1bab4aa1d030 \
   --glslang-ref f0bd0257c308b9a26562c1a30c4748a0219cc951
@@ -60,7 +75,7 @@ $ spirv-dis vulkan/shader_dump/shader-cs-09d44a25441d4ba7.spv | grep Barrier
 
 The `OpMemoryBarrier %uint_1 %uint_3400` instructions in the second shader correspond to the `memoryBarrier()` call in the GLSL, and the `OpControlBarrier %uint_2 %uint_2 %uint_264` instructions correspond to the `barrier()` calls. The first shader only has the control barriers, while the second shader has a memory barrier before each control barrier. Note, the scope of the barriers is the same in both shaders (`%uint_2` = `Workgroup`), but the scope of the memory barrier is `Device` in the second shader (`%uint_3400` = `Device`).
 
-In the dumped MSL shader code, (which is identical across the current commit in the main branch and version 1.4.1 release of MoltenVK and can be found at `vulkan/shader_dump`), the `barrier()`-only shader uses `threadgroup_barrier(mem_flags::mem_threadgroup)`, while the `memoryBarrier(); barrier()` shader adds `atomic_thread_fence(mem_flags::mem_device | mem_flags::mem_threadgroup | mem_flags::mem_texture, memory_order_seq_cst, thread_scope_device);` corresponding to the `memoryBarrier();` call.
+In the dumped MSL shader code, (which is identical across the current commit in the main branch and version 1.4.1 release of MoltenVK and can be found at `vulkan/shader_dump`), the `barrier()`-only shader uses `threadgroup_barrier(mem_flags::mem_threadgroup)`, while the `memoryBarrier(); barrier()` shader adds `atomic_thread_fence(mem_flags::mem_device | mem_flags::mem_threadgroup | mem_flags::mem_texture, memory_order_seq_cst, thread_scope_device);` corresponding to the `memoryBarrier();` call. This additional memory fence is what makes the test pass, indicating that the `threadgroup_barrier` alone is not sufficient for synchronization in this shader when running through the Vulkan/MoltenVK path, even though it should be in theory and even though the same generated MSL shader passes when run through the native Metal harness.
 
 The test output will look something like the following, where the `barrier()`-only shader fails and the `memoryBarrier(); barrier()` shader passes when using the vulkan backend, but when you run the exact same dumped MSL shaders through the native Metal harness, both pass (indicating the bug is specific to the Vulkan/MoltenVK path and not to the visible generated MSL source alone):
 
