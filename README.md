@@ -223,3 +223,31 @@ cd metal_from_dumps
 ./build.sh
 ./barrier_test.exec
 ```
+
+
+```bash
+
+python3 generate_blobs.py --output-dir data
+
+# Optionally select using the main branch latest commit
+bash vulkan/select_toolchain.sh --moltenvk-ref f79c6c5690d3ee06ec3a00d11a8b1bab4aa1d030 --glslang-ref f0bd0257c308b9a26562c1a30c4748a0219cc951
+
+# Or the last release version: 1.4.1
+# bash vulkan/select_toolchain.sh --moltenvk-ref db445ff2042d9ce348c439ad8451112f354b8d2a --glslang-ref f0bd0257c308b9a26562c1a30c4748a0219cc951
+
+bash run_all_test.sh
+
+spirv-dis vulkan/shader_dump/shader-cs-c958ee748730720d.spv | grep Barrier
+               OpControlBarrier %uint_2 %uint_2 %uint_264
+               OpControlBarrier %uint_2 %uint_2 %uint_264
+               OpControlBarrier %uint_2 %uint_2 %uint_264
+
+spirv-dis vulkan/shader_dump/shader-cs-09d44a25441d4ba7.spv | grep Barrier
+               OpMemoryBarrier %uint_1 %uint_3400
+               OpControlBarrier %uint_2 %uint_2 %uint_264
+               OpMemoryBarrier %uint_1 %uint_3400
+               OpControlBarrier %uint_2 %uint_2 %uint_264
+               OpMemoryBarrier %uint_1 %uint_3400
+               OpControlBarrier %uint_2 %uint_2 %uint_264
+
+```
