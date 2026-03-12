@@ -338,15 +338,17 @@ private func detectBufferBinding(source: String, variant: Variant) throws -> Buf
 private func makePipeline(device: MTLDevice,
                           function: MTLFunction,
                           mode: PipelineMode) throws -> MTLComputePipelineState {
+    let descriptor = MTLComputePipelineDescriptor()
+    descriptor.computeFunction = function
+
     switch mode {
     case .baseline:
-        return try device.makeComputePipelineState(function: function)
+        descriptor.maxTotalThreadsPerThreadgroup = 64 // this seems to fix the bug
     case .bugTrigger:
-        let descriptor = MTLComputePipelineDescriptor()
-        descriptor.computeFunction = function
         descriptor.maxTotalThreadsPerThreadgroup = threadsPerThreadgroup
-        return try device.makeComputePipelineState(descriptor: descriptor, options: [], reflection: nil)
     }
+
+    return try device.makeComputePipelineState(descriptor: descriptor, options: [], reflection: nil)
 }
 
 private func runVariant(device: MTLDevice,
