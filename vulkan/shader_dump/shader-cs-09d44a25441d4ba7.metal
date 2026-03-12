@@ -51,6 +51,12 @@ struct DataBuffer
 
 constant uint3 gl_WorkGroupSize [[maybe_unused]] = uint3(25u, 1u, 1u);
 
+struct spvDescriptorSetBuffer0
+{
+    constant void* _m0_pad [[id(0)]];
+    device DataBuffer* m_42 [[id(1)]];
+};
+
 static inline __attribute__((always_inline))
 void fft125_impl(thread const uint& workgroupIndex, thread const uint& tid, device DataBuffer& _42, threadgroup spvUnsafeArray<float2, 125>& sdata)
 {
@@ -134,7 +140,8 @@ void fft125_impl(thread const uint& workgroupIndex, thread const uint& tid, devi
     sdata[ioIndex] = fftReg3;
     ioIndex = (tid * 5u) + 4u;
     sdata[ioIndex] = fftReg4;
-    threadgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup | mem_flags::mem_texture);
+    atomic_thread_fence(mem_flags::mem_device | mem_flags::mem_threadgroup | mem_flags::mem_texture, memory_order_seq_cst, thread_scope_device);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
     ioIndex = tid;
     fftReg0 = sdata[ioIndex];
     ioIndex = tid + 25u;
@@ -207,7 +214,8 @@ void fft125_impl(thread const uint& workgroupIndex, thread const uint& tid, devi
     fftReg2 = radixRegister2;
     fftReg3 = radixRegister3;
     fftReg4 = radixRegister4;
-    threadgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup | mem_flags::mem_texture);
+    atomic_thread_fence(mem_flags::mem_device | mem_flags::mem_threadgroup | mem_flags::mem_texture, memory_order_seq_cst, thread_scope_device);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
     ioIndex = (tid * 5u) - ((tid % 5u) << 2u);
     sdata[ioIndex] = fftReg0;
     ioIndex = ((tid * 5u) - ((tid % 5u) << 2u)) + 5u;
@@ -218,7 +226,8 @@ void fft125_impl(thread const uint& workgroupIndex, thread const uint& tid, devi
     sdata[ioIndex] = fftReg3;
     ioIndex = ((tid * 5u) - ((tid % 5u) << 2u)) + 20u;
     sdata[ioIndex] = fftReg4;
-    threadgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup | mem_flags::mem_texture);
+    atomic_thread_fence(mem_flags::mem_device | mem_flags::mem_threadgroup | mem_flags::mem_texture, memory_order_seq_cst, thread_scope_device);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
     ioIndex = tid;
     fftReg0 = sdata[ioIndex];
     ioIndex = tid + 75u;
@@ -304,11 +313,11 @@ void fft125_impl(thread const uint& workgroupIndex, thread const uint& tid, devi
     _42.data[ioIndex] = fftReg4;
 }
 
-kernel void main0(device DataBuffer& _42 [[buffer(0)]], uint3 gl_WorkGroupID [[threadgroup_position_in_grid]], uint3 gl_LocalInvocationID [[thread_position_in_threadgroup]])
+kernel void main0(constant spvDescriptorSetBuffer0& spvDescriptorSet0 [[buffer(0)]], uint3 gl_WorkGroupID [[threadgroup_position_in_grid]], uint3 gl_LocalInvocationID [[thread_position_in_threadgroup]])
 {
     threadgroup spvUnsafeArray<float2, 125> sdata;
     uint param = gl_WorkGroupID.x;
     uint param_1 = gl_LocalInvocationID.x;
-    fft125_impl(param, param_1, _42, sdata);
+    fft125_impl(param, param_1, (*spvDescriptorSet0.m_42), sdata);
 }
 

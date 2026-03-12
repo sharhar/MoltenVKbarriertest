@@ -92,9 +92,48 @@ find_glslang_validator() {
             echo "${candidate}"
             return 0
         fi
-    done < <(find "${search_dir}" -type f -name glslangValidator | sort)
+    done < <(find "${search_dir}" \( -type f -o -type l \) -name glslangValidator | sort)
+
+    while IFS= read -r candidate; do
+        if [[ -x "${candidate}" ]]; then
+            echo "${candidate}"
+            return 0
+        fi
+    done < <(find "${search_dir}" \( -type f -o -type l \) -name glslang | sort)
 
     return 1
+}
+
+detect_glslang_build_target() {
+    local glslang_worktree="$1"
+    local standalone_cmake="${glslang_worktree}/StandAlone/CMakeLists.txt"
+
+    [[ -f "${standalone_cmake}" ]] || return 1
+
+    if grep -Eq 'add_executable[[:space:]]*\([[:space:]]*glslang-standalone([[:space:]]|$)' "${standalone_cmake}"; then
+        echo "glslang-standalone"
+        return 0
+    fi
+
+    if grep -Eq 'add_executable[[:space:]]*\([[:space:]]*glslangValidator([[:space:]]|$)' "${standalone_cmake}"; then
+        echo "glslangValidator"
+        return 0
+    fi
+
+    if grep -Eq 'add_executable[[:space:]]*\([[:space:]]*glslang([[:space:]]|$)' "${standalone_cmake}"; then
+        echo "glslang"
+        return 0
+    fi
+
+    return 1
+}
+
+moltenvk_fetch_supports_glslang_root() {
+    local moltenvk_worktree="$1"
+    local fetch_script="${moltenvk_worktree}/fetchDependencies"
+
+    [[ -f "${fetch_script}" ]] || return 1
+    grep -Fq -- "--glslang-root" "${fetch_script}"
 }
 
 prepare_glslang_sources() {
@@ -125,6 +164,7 @@ build_glslang_validator() {
     local output_bin="${pair_dir}/tools/glslangValidator"
     local build_dir="${glslang_worktree}/codex-build-${glslang_commit:0:12}"
     local built_bin=""
+    local build_target=""
 
     if [[ -x "${output_bin}" ]]; then
         echo "${output_bin}"
@@ -132,14 +172,16 @@ build_glslang_validator() {
     fi
 
     ensure_dir "${pair_dir}/tools"
-    prepare_glslang_sources "${glslang_worktree}"
+    prepare_glslang_sources "${glslang_worktree}" >&2
+
+    build_target="$(detect_glslang_build_target "${glslang_worktree}")" || fail "Failed to determine glslang standalone target in ${glslang_worktree}"
 
     if command -v ninja >/dev/null 2>&1; then
-        cmake -S "${glslang_worktree}" -B "${build_dir}" -G Ninja -DCMAKE_BUILD_TYPE=Release || fail "Failed to configure glslang with CMake in ${build_dir}"
+        cmake -S "${glslang_worktree}" -B "${build_dir}" -G Ninja -DCMAKE_BUILD_TYPE=Release -DGLSLANG_TESTS=OFF -DGLSLANG_ENABLE_INSTALL=OFF >&2 || fail "Failed to configure glslang with CMake in ${build_dir}"
     else
-        cmake -S "${glslang_worktree}" -B "${build_dir}" -DCMAKE_BUILD_TYPE=Release || fail "Failed to configure glslang with CMake in ${build_dir}"
+        cmake -S "${glslang_worktree}" -B "${build_dir}" -DCMAKE_BUILD_TYPE=Release -DGLSLANG_TESTS=OFF -DGLSLANG_ENABLE_INSTALL=OFF >&2 || fail "Failed to configure glslang with CMake in ${build_dir}"
     fi
-    cmake --build "${build_dir}" --target glslangValidator || fail "Failed to build glslangValidator in ${build_dir}"
+    cmake --build "${build_dir}" --target "${build_target}" >&2 || fail "Failed to build ${build_target} in ${build_dir}"
 
     built_bin="$(find_glslang_validator "${build_dir}")" || fail "Failed to locate built glslangValidator under ${build_dir}"
     cp -f "${built_bin}" "${output_bin}"
@@ -156,6 +198,9 @@ build_moltenvk() {
     local output_icd="${pair_dir}/runtime/MoltenVK_icd.json"
     local source_dylib="${moltenvk_worktree}/Package/Latest/MoltenVK/dynamic/dylib/macOS/libMoltenVK.dylib"
     local quoted_dylib_path=""
+    local fetch_args=(--macos)
+    local derived_data_dir="${pair_dir}/xcode-derived-data"
+    local xcodebuild_bin=""
 
     if [[ -f "${output_dylib}" && -f "${output_icd}" ]]; then
         printf '%s|%s\n' "${output_dylib}" "${output_icd}"
@@ -163,12 +208,24 @@ build_moltenvk() {
     fi
 
     ensure_dir "${pair_dir}/runtime"
+    ensure_dir "${derived_data_dir}"
+
+    if moltenvk_fetch_supports_glslang_root "${moltenvk_worktree}"; then
+        fetch_args+=(--glslang-root "${glslang_worktree}")
+    fi
+
+    xcodebuild_bin="$(command -v xcodebuild)" || fail "Required command not found: xcodebuild"
 
     (
         cd "${moltenvk_worktree}"
-        ./fetchDependencies --macos --glslang-root "${glslang_worktree}"
-        make macos
-    )
+        ./fetchDependencies "${fetch_args[@]}" >&2
+        "${xcodebuild_bin}" build \
+            -project "MoltenVKPackaging.xcodeproj" \
+            -scheme "MoltenVK Package (macOS only)" \
+            -destination "generic/platform=macOS" \
+            -derivedDataPath "${derived_data_dir}" \
+            -quiet >&2
+    ) || fail "Failed to build MoltenVK in ${moltenvk_worktree}"
 
     [[ -f "${source_dylib}" ]] || fail "MoltenVK build finished but ${source_dylib} was not produced"
 
