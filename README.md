@@ -65,6 +65,23 @@ Then, build and run the Vulkan test:
 bash run_all_test.sh
 ```
 
+To run just the Vulkan harness under the Khronos validation layer and print a validation summary at the end, use:
+
+```bash
+cd vulkan
+./run.sh --validation
+```
+
+The `run.sh` wrapper already forwards extra arguments to `barrier_test.exec`, so no separate script changes are needed to enable this mode.
+
+If the run ends with:
+
+```text
+Validation: 0 warnings, 0 errors
+```
+
+that is useful evidence that the validation layers did not find any host-side Vulkan API misuse in this harness. It does **not** prove that the `barrier()`-only shader is semantically correct or that MoltenVK's internal handling of this workload is bug-free. The likely issue reproduced by this repo is below what standard validation layers can conclusively check.
+
 Once the test ends, you can examine the SPIR-V disassembly of the two shader variants to see the difference in barrier usage:
 
 ```

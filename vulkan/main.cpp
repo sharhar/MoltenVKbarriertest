@@ -27,6 +27,8 @@ constexpr int kDefaultIterations = 10;
 constexpr float kDefaultAbsTolerance = 5e-3f;
 constexpr float kDefaultRelTolerance = 5e-4f;
 constexpr std::size_t kMismatchPreviewLimit = 5;
+constexpr std::size_t kValidationMessagePreviewLimit = 8;
+constexpr const char* kValidationLayerName = "VK_LAYER_KHRONOS_validation";
 
 struct Complex32 {
     float real;
@@ -60,6 +62,14 @@ struct Config {
     int iterations = kDefaultIterations;
     float absTolerance = kDefaultAbsTolerance;
     float relTolerance = kDefaultRelTolerance;
+    bool enableValidation = false;
+};
+
+struct ValidationState {
+    bool enabled = false;
+    std::size_t warningCount = 0;
+    std::size_t errorCount = 0;
+    std::vector<std::string> previewMessages;
 };
 
 class ScopedShaderModule {
@@ -197,6 +207,7 @@ class ScopedCommandBuffer {
 
 struct VulkanContext {
     VkInstance instance = VK_NULL_HANDLE;
+    VkDebugUtilsMessengerEXT debugMessenger = VK_NULL_HANDLE;
     VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
     VkDevice device = VK_NULL_HANDLE;
     VkQueue queue = VK_NULL_HANDLE;
@@ -212,6 +223,7 @@ struct VulkanContext {
     VkFence fence = VK_NULL_HANDLE;
     bool hostCoherent = false;
     VkDeviceSize nonCoherentAtomSize = 1;
+    PFN_vkDestroyDebugUtilsMessengerEXT destroyDebugUtilsMessenger = nullptr;
 
     ~VulkanContext() {
         if (device != VK_NULL_HANDLE) {
@@ -243,6 +255,9 @@ struct VulkanContext {
         }
         if (device != VK_NULL_HANDLE) {
             vkDestroyDevice(device, nullptr);
+        }
+        if (debugMessenger != VK_NULL_HANDLE && destroyDebugUtilsMessenger != nullptr) {
+            destroyDebugUtilsMessenger(instance, debugMessenger, nullptr);
         }
         if (instance != VK_NULL_HANDLE) {
             vkDestroyInstance(instance, nullptr);
@@ -285,7 +300,7 @@ std::string usage() {
     return
         "Usage: ./barrier_test.exec [--input PATH] [--reference PATH] [--iterations N] "
         "[--abs-tol VALUE] [--rel-tol VALUE] [--barrier-only-spv PATH] "
-        "[--memory-and-barrier-spv PATH] [--shader-dump-dir PATH]\n\n"
+        "[--memory-and-barrier-spv PATH] [--shader-dump-dir PATH] [--validation]\n\n"
         "Defaults:\n"
         "  --input ../data/fft_875x125_input.bin\n"
         "  --reference ../data/fft_875x125_reference.bin\n"
@@ -294,7 +309,8 @@ std::string usage() {
         "  --rel-tol 0.0005\n"
         "  --barrier-only-spv barrier_only.spv\n"
         "  --memory-and-barrier-spv memory_barrier_then_barrier.spv\n"
-        "  --shader-dump-dir ./shader_dump\n";
+        "  --shader-dump-dir ./shader_dump\n"
+        "  --validation disabled\n";
 }
 
 Config parseArgs(int argc, char** argv) {
@@ -333,6 +349,10 @@ Config parseArgs(int argc, char** argv) {
         }
         if (flag == "--shader-dump-dir") {
             config.shaderDumpDir = nextValue();
+            continue;
+        }
+        if (flag == "--validation") {
+            config.enableValidation = true;
             continue;
         }
         if (flag == "--iterations") {
@@ -468,6 +488,112 @@ bool hasExtension(const std::vector<VkExtensionProperties>& extensions, const ch
     return false;
 }
 
+bool hasLayer(const std::vector<VkLayerProperties>& layers, const char* name) {
+    for (const VkLayerProperties& layer : layers) {
+        if (std::strcmp(layer.layerName, name) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::string validationSeverityName(VkDebugUtilsMessageSeverityFlagBitsEXT severity) {
+    switch (severity) {
+    case VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT:
+        return "error";
+    case VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT:
+        return "warning";
+    case VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT:
+        return "info";
+    case VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT:
+        return "verbose";
+    default:
+        return "unknown";
+    }
+}
+
+std::string validationTypeName(VkDebugUtilsMessageTypeFlagsEXT type) {
+    std::string name;
+    const auto appendName = [&](const char* value) {
+        if (!name.empty()) {
+            name += ",";
+        }
+        name += value;
+    };
+
+    if ((type & VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT) != 0u) {
+        appendName("general");
+    }
+    if ((type & VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT) != 0u) {
+        appendName("validation");
+    }
+    if ((type & VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT) != 0u) {
+        appendName("performance");
+    }
+    if (name.empty()) {
+        name = "unknown";
+    }
+    return name;
+}
+
+VKAPI_ATTR VkBool32 VKAPI_CALL validationCallback(
+    VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
+    VkDebugUtilsMessageTypeFlagsEXT messageTypes,
+    const VkDebugUtilsMessengerCallbackDataEXT* callbackData,
+    void* userData) {
+    auto* state = static_cast<ValidationState*>(userData);
+    if (state == nullptr) {
+        return VK_FALSE;
+    }
+
+    const std::string severity = validationSeverityName(messageSeverity);
+    const std::string type = validationTypeName(messageTypes);
+    const char* messageText =
+        callbackData != nullptr && callbackData->pMessage != nullptr ? callbackData->pMessage : "No message provided.";
+    const std::string formattedMessage = "[validation][" + severity + "][" + type + "] " + messageText;
+
+    if (messageSeverity == VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
+        ++state->errorCount;
+    } else if (messageSeverity == VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) {
+        ++state->warningCount;
+    }
+
+    if (state->previewMessages.size() < kValidationMessagePreviewLimit) {
+        state->previewMessages.push_back(formattedMessage);
+    }
+
+    std::cerr << formattedMessage << "\n";
+    return VK_FALSE;
+}
+
+VkDebugUtilsMessengerCreateInfoEXT makeDebugUtilsMessengerCreateInfo(ValidationState* state) {
+    VkDebugUtilsMessengerCreateInfoEXT createInfo{};
+    createInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+    createInfo.messageSeverity =
+        VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+    createInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+                             VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+                             VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+    createInfo.pfnUserCallback = validationCallback;
+    createInfo.pUserData = state;
+    return createInfo;
+}
+
+void createDebugUtilsMessenger(VulkanContext* context, ValidationState* state) {
+    auto createMessenger = reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(
+        vkGetInstanceProcAddr(context->instance, "vkCreateDebugUtilsMessengerEXT"));
+    context->destroyDebugUtilsMessenger = reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(
+        vkGetInstanceProcAddr(context->instance, "vkDestroyDebugUtilsMessengerEXT"));
+
+    if (createMessenger == nullptr || context->destroyDebugUtilsMessenger == nullptr) {
+        fail("VK_EXT_debug_utils was enabled but the loader did not expose debug utils entry points.");
+    }
+
+    const VkDebugUtilsMessengerCreateInfoEXT createInfo = makeDebugUtilsMessengerCreateInfo(state);
+    checkVk(createMessenger(context->instance, &createInfo, nullptr, &context->debugMessenger),
+            "vkCreateDebugUtilsMessengerEXT");
+}
+
 uint32_t findMemoryTypeIndex(VkPhysicalDevice physicalDevice,
                              uint32_t memoryTypeBits,
                              VkMemoryPropertyFlags required,
@@ -561,8 +687,14 @@ VkPhysicalDevice pickPhysicalDevice(VkInstance instance, uint32_t* queueFamilyIn
     fail("No Vulkan queue family with compute support was found.");
 }
 
-VulkanContext createContext(std::size_t bufferByteCount) {
+VulkanContext createContext(std::size_t bufferByteCount, const Config& config, ValidationState* validationState) {
     VulkanContext context;
+
+    uint32_t instanceLayerCount = 0;
+    checkVk(vkEnumerateInstanceLayerProperties(&instanceLayerCount, nullptr), "vkEnumerateInstanceLayerProperties(count)");
+    std::vector<VkLayerProperties> instanceLayers(instanceLayerCount);
+    checkVk(vkEnumerateInstanceLayerProperties(&instanceLayerCount, instanceLayers.data()),
+            "vkEnumerateInstanceLayerProperties(list)");
 
     uint32_t instanceExtensionCount = 0;
     checkVk(vkEnumerateInstanceExtensionProperties(nullptr, &instanceExtensionCount, nullptr),
@@ -572,10 +704,29 @@ VulkanContext createContext(std::size_t bufferByteCount) {
             "vkEnumerateInstanceExtensionProperties(list)");
 
     std::vector<const char*> enabledInstanceExtensions;
+    std::vector<const char*> enabledInstanceLayers;
     VkInstanceCreateFlags instanceFlags = 0;
     if (hasExtension(instanceExtensions, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME)) {
         enabledInstanceExtensions.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
         instanceFlags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+    }
+
+    VkDebugUtilsMessengerCreateInfoEXT debugUtilsCreateInfo{};
+    if (config.enableValidation) {
+        if (!hasLayer(instanceLayers, kValidationLayerName)) {
+            fail(std::string("Validation requested, but ") + kValidationLayerName +
+                 " is not available. Install the LunarG Vulkan SDK or make its layer manifests visible to the Vulkan "
+                 "loader.");
+        }
+        if (!hasExtension(instanceExtensions, VK_EXT_DEBUG_UTILS_EXTENSION_NAME)) {
+            fail(std::string("Validation requested, but ") + VK_EXT_DEBUG_UTILS_EXTENSION_NAME +
+                 " is not available. Install the LunarG Vulkan SDK or make its instance extensions visible to the "
+                 "Vulkan loader.");
+        }
+
+        enabledInstanceLayers.push_back(kValidationLayerName);
+        enabledInstanceExtensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+        debugUtilsCreateInfo = makeDebugUtilsMessengerCreateInfo(validationState);
     }
 
     VkApplicationInfo applicationInfo{};
@@ -590,10 +741,18 @@ VulkanContext createContext(std::size_t bufferByteCount) {
     instanceCreateInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     instanceCreateInfo.flags = instanceFlags;
     instanceCreateInfo.pApplicationInfo = &applicationInfo;
+    instanceCreateInfo.enabledLayerCount = static_cast<uint32_t>(enabledInstanceLayers.size());
+    instanceCreateInfo.ppEnabledLayerNames = enabledInstanceLayers.data();
     instanceCreateInfo.enabledExtensionCount = static_cast<uint32_t>(enabledInstanceExtensions.size());
     instanceCreateInfo.ppEnabledExtensionNames = enabledInstanceExtensions.data();
+    if (config.enableValidation) {
+        instanceCreateInfo.pNext = &debugUtilsCreateInfo;
+    }
 
     checkVk(vkCreateInstance(&instanceCreateInfo, nullptr, &context.instance), "vkCreateInstance");
+    if (config.enableValidation) {
+        createDebugUtilsMessenger(&context, validationState);
+    }
 
     context.physicalDevice = pickPhysicalDevice(context.instance, &context.queueFamilyIndex);
 
@@ -874,6 +1033,23 @@ void printConclusion(const std::vector<IterationResult>& barrierOnlyResults,
     std::cout << "  memoryBarrier(); barrier(): " << memoryBarrierFailures << "\n";
 }
 
+bool validationFoundIssues(const ValidationState& validationState) {
+    return validationState.warningCount > 0 || validationState.errorCount > 0;
+}
+
+void printValidationSummary(const ValidationState& validationState) {
+    if (!validationState.enabled) {
+        std::cout << "\nValidation: disabled\n";
+        return;
+    }
+
+    std::cout << "\nValidation: " << validationState.warningCount << " warnings, " << validationState.errorCount
+              << " errors\n";
+    for (const std::string& message : validationState.previewMessages) {
+        std::cout << "  " << message << "\n";
+    }
+}
+
 std::vector<IterationResult> runVariant(const VulkanContext& context,
                                         const Variant& variant,
                                         const std::vector<std::uint8_t>& inputBytes,
@@ -913,8 +1089,10 @@ std::vector<IterationResult> runVariant(const VulkanContext& context,
 }  // namespace
 
 int main(int argc, char** argv) {
+    ValidationState validationState;
     try {
         const Config config = parseArgs(argc, argv);
+        validationState.enabled = config.enableValidation;
         const std::string shaderDumpDir = configureShaderDumpDir(config.shaderDumpDir);
         std::cout << "=== Vulkan/MoltenVK FFT Barrier Bug Reproduction ===\n";
         std::cout << "MoltenVK shader dump dir: " << shaderDumpDir << "\n" << std::flush;
@@ -933,52 +1111,57 @@ int main(int argc, char** argv) {
         const std::vector<Complex32> reference = decodeComplexBlob(referenceBytes, config.referencePath);
         (void)input;
 
-        VulkanContext context = createContext(inputBytes.size());
+        {
+            VulkanContext context = createContext(inputBytes.size(), config, &validationState);
 
-        VkPhysicalDeviceProperties properties{};
-        vkGetPhysicalDeviceProperties(context.physicalDevice, &properties);
+            VkPhysicalDeviceProperties properties{};
+            vkGetPhysicalDeviceProperties(context.physicalDevice, &properties);
 
-        std::cout << "Device: " << properties.deviceName << "\n";
-        std::cout << "Vulkan API: " << formatApiVersion(properties.apiVersion) << "\n";
-        std::cout << "Driver version: " << properties.driverVersion << "\n";
-        std::cout << "FFT layout: " << kFftCount << " x " << kFftLength << "\n";
-        std::cout << "Threads per workgroup: " << kThreadsPerWorkgroup << "\n";
-        std::cout << "Iterations per variant: " << config.iterations << "\n";
-        std::cout << "Tolerance: abs <= " << config.absTolerance << ", rel <= " << config.relTolerance << "\n";
-        std::cout << "Input blob: " << config.inputPath << "\n";
-        std::cout << "Reference blob: " << config.referencePath << "\n";
-        std::cout << "barrier() shader: " << config.barrierOnlyShaderPath << "\n";
-        std::cout << "memoryBarrier(); barrier() shader: " << config.memoryBarrierShaderPath << "\n";
-        std::cout << "Expected bytes per blob: " << expectedByteCount() << "\n\n";
+            std::cout << "Device: " << properties.deviceName << "\n";
+            std::cout << "Vulkan API: " << formatApiVersion(properties.apiVersion) << "\n";
+            std::cout << "Driver version: " << properties.driverVersion << "\n";
+            std::cout << "FFT layout: " << kFftCount << " x " << kFftLength << "\n";
+            std::cout << "Threads per workgroup: " << kThreadsPerWorkgroup << "\n";
+            std::cout << "Iterations per variant: " << config.iterations << "\n";
+            std::cout << "Tolerance: abs <= " << config.absTolerance << ", rel <= " << config.relTolerance << "\n";
+            std::cout << "Input blob: " << config.inputPath << "\n";
+            std::cout << "Reference blob: " << config.referencePath << "\n";
+            std::cout << "barrier() shader: " << config.barrierOnlyShaderPath << "\n";
+            std::cout << "memoryBarrier(); barrier() shader: " << config.memoryBarrierShaderPath << "\n";
+            std::cout << "Validation: " << (config.enableValidation ? "enabled" : "disabled") << "\n";
+            std::cout << "Expected bytes per blob: " << expectedByteCount() << "\n\n";
 
-        const std::vector<Variant> variants = {
-            Variant{"barrier()", config.barrierOnlyShaderPath},
-            Variant{"memoryBarrier(); barrier()", config.memoryBarrierShaderPath},
-        };
+            const std::vector<Variant> variants = {
+                Variant{"barrier()", config.barrierOnlyShaderPath},
+                Variant{"memoryBarrier(); barrier()", config.memoryBarrierShaderPath},
+            };
 
-        std::vector<IterationResult> barrierOnlyResults;
-        std::vector<IterationResult> memoryBarrierResults;
+            std::vector<IterationResult> barrierOnlyResults;
+            std::vector<IterationResult> memoryBarrierResults;
 
-        for (std::size_t variantIndex = 0; variantIndex < variants.size(); ++variantIndex) {
-            const Variant& variant = variants[variantIndex];
-            std::cout << "--- Test " << (variantIndex + 1) << ": " << variant.title << " ---\n";
-            const std::vector<IterationResult> results =
-                runVariant(context, variant, inputBytes, reference, config);
+            for (std::size_t variantIndex = 0; variantIndex < variants.size(); ++variantIndex) {
+                const Variant& variant = variants[variantIndex];
+                std::cout << "--- Test " << (variantIndex + 1) << ": " << variant.title << " ---\n";
+                const std::vector<IterationResult> results =
+                    runVariant(context, variant, inputBytes, reference, config);
 
-            for (std::size_t iterationIndex = 0; iterationIndex < results.size(); ++iterationIndex) {
-                printIterationResult(results[iterationIndex], static_cast<int>(iterationIndex + 1), reference.size());
+                for (std::size_t iterationIndex = 0; iterationIndex < results.size(); ++iterationIndex) {
+                    printIterationResult(results[iterationIndex], static_cast<int>(iterationIndex + 1), reference.size());
+                }
+
+                printSummary(results);
+                if (variantIndex == 0) {
+                    barrierOnlyResults = results;
+                } else {
+                    memoryBarrierResults = results;
+                }
             }
 
-            printSummary(results);
-            if (variantIndex == 0) {
-                barrierOnlyResults = results;
-            } else {
-                memoryBarrierResults = results;
-            }
+            printConclusion(barrierOnlyResults, memoryBarrierResults);
         }
 
-        printConclusion(barrierOnlyResults, memoryBarrierResults);
-        return 0;
+        printValidationSummary(validationState);
+        return validationFoundIssues(validationState) ? 1 : 0;
     } catch (const std::exception& exception) {
         std::cerr << "ERROR: " << exception.what() << "\n";
         return 1;
