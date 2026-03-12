@@ -16,6 +16,11 @@ private struct Variant {
     let functionName: String
 }
 
+private enum BufferBinding {
+    case direct(bufferIndex: Int)
+    case argumentBuffer(rootIndex: Int, resourceIndex: Int)
+}
+
 private struct Complex32 {
     var real: Float
     var imag: Float
@@ -54,6 +59,7 @@ private enum TestError: Error, CustomStringConvertible {
     case blobNotFound(String)
     case blobSizeMismatch(path: String, expectedBytes: Int, actualBytes: Int)
     case functionNotFound(path: String, name: String)
+    case unsupportedShaderLayout(path: String, reason: String)
     case commandBufferFailed(String)
     case commandEncodingFailed(String)
 
@@ -77,6 +83,8 @@ private enum TestError: Error, CustomStringConvertible {
             return "Blob size mismatch for \(path). Expected \(expectedBytes) bytes, got \(actualBytes)."
         case .functionNotFound(let path, let name):
             return "Failed to find kernel function '\(name)' in dumped shader \(path)."
+        case .unsupportedShaderLayout(let path, let reason):
+            return "Unsupported dumped shader layout in \(path): \(reason)"
         case .commandBufferFailed(let reason):
             return "GPU command buffer failed: \(reason)"
         case .commandEncodingFailed(let reason):
@@ -274,20 +282,74 @@ private func makeLibrary(device: MTLDevice, variant: Variant) throws -> MTLLibra
     }
 }
 
+private func firstMatch(in text: String, pattern: String) -> NSTextCheckingResult? {
+    guard let regex = try? NSRegularExpression(pattern: pattern) else {
+        return nil
+    }
+    let range = NSRange(text.startIndex..<text.endIndex, in: text)
+    return regex.firstMatch(in: text, options: [], range: range)
+}
+
+private func captureInt(in text: String, match: NSTextCheckingResult, group: Int) -> Int? {
+    let range = match.range(at: group)
+    guard range.location != NSNotFound, let swiftRange = Range(range, in: text) else {
+        return nil
+    }
+    return Int(text[swiftRange])
+}
+
+private func detectBufferBinding(source: String, variant: Variant) throws -> BufferBinding {
+    let functionName = NSRegularExpression.escapedPattern(for: variant.functionName)
+    let directPattern = "kernel\\s+void\\s+\(functionName)\\s*\\([^\\)]*\\bDataBuffer\\s*\\*\\s*\\w+\\s*\\[\\[buffer\\((\\d+)\\)\\]\\]"
+    if let match = firstMatch(in: source, pattern: directPattern),
+       let bufferIndex = captureInt(in: source, match: match, group: 1) {
+        return .direct(bufferIndex: bufferIndex)
+    }
+
+    let argumentBufferPattern = "kernel\\s+void\\s+\(functionName)\\s*\\([^\\)]*\\bspvDescriptorSetBuffer\\w*\\s*&\\s*\\w+\\s*\\[\\[buffer\\((\\d+)\\)\\]\\]"
+    let resourcePattern = "\\bdevice\\s+DataBuffer\\s*\\*\\s*\\w+\\s*\\[\\[id\\((\\d+)\\)\\]\\]"
+    if let rootMatch = firstMatch(in: source, pattern: argumentBufferPattern),
+       let rootIndex = captureInt(in: source, match: rootMatch, group: 1),
+       let resourceMatch = firstMatch(in: source, pattern: resourcePattern),
+       let resourceIndex = captureInt(in: source, match: resourceMatch, group: 1) {
+        return .argumentBuffer(rootIndex: rootIndex, resourceIndex: resourceIndex)
+    }
+
+    throw TestError.unsupportedShaderLayout(
+        path: variant.sourcePath,
+        reason: "Could not determine how the FFT IO buffer is bound."
+    )
+}
+
 private func runVariant(device: MTLDevice,
                         queue: MTLCommandQueue,
                         variant: Variant,
                         inputData: Data,
                         reference: [Complex32],
                         config: Config) throws -> [IterationResult] {
+    let source = try String(contentsOfFile: variant.sourcePath, encoding: .utf8)
     let library = try makeLibrary(device: device, variant: variant)
     guard let function = library.makeFunction(name: variant.functionName) else {
         throw TestError.functionNotFound(path: variant.sourcePath, name: variant.functionName)
     }
+    let bufferBinding = try detectBufferBinding(source: source, variant: variant)
 
     let pipeline = try device.makeComputePipelineState(function: function)
     guard let ioBuffer = device.makeBuffer(length: inputData.count, options: .storageModeShared) else {
         throw TestError.commandEncodingFailed("Unable to allocate FFT IO buffer.")
+    }
+    let argumentBuffer: MTLBuffer?
+    switch bufferBinding {
+    case .direct:
+        argumentBuffer = nil
+    case .argumentBuffer(let rootIndex, let resourceIndex):
+        let argumentEncoder = function.makeArgumentEncoder(bufferIndex: rootIndex)
+        guard let encodedBuffer = device.makeBuffer(length: argumentEncoder.encodedLength, options: .storageModeShared) else {
+            throw TestError.commandEncodingFailed("Unable to allocate Metal argument buffer.")
+        }
+        argumentEncoder.setArgumentBuffer(encodedBuffer, offset: 0)
+        argumentEncoder.setBuffer(ioBuffer, offset: 0, index: resourceIndex)
+        argumentBuffer = encodedBuffer
     }
 
     let threadgroupsPerGrid = MTLSize(width: fftCount, height: 1, depth: 1)
@@ -305,7 +367,16 @@ private func runVariant(device: MTLDevice,
         }
 
         encoder.setComputePipelineState(pipeline)
-        encoder.setBuffer(ioBuffer, offset: 0, index: 0)
+        switch bufferBinding {
+        case .direct(let bufferIndex):
+            encoder.setBuffer(ioBuffer, offset: 0, index: bufferIndex)
+        case .argumentBuffer(let rootIndex, _):
+            guard let argumentBuffer else {
+                throw TestError.commandEncodingFailed("Argument buffer was not initialized.")
+            }
+            encoder.setBuffer(argumentBuffer, offset: 0, index: rootIndex)
+            encoder.useResource(ioBuffer, usage: [.read, .write])
+        }
         encoder.dispatchThreadgroups(threadgroupsPerGrid, threadsPerThreadgroup: threads)
         encoder.endEncoding()
 
