@@ -1,0 +1,151 @@
+=== Running vulkan ===
+barrier_test.comp
+barrier_test.comp
+Build complete.
+GLSL compiler: /Users/shaharsandhaus/MLVKPLRQ/MoltenVKbarriertest/build/toolchains/pairs/moltenvk-32dceb35e2c9__glslang-f0bd0257c308/tools/glslangValidator
+Generate blobs with: python3 generate_blobs.py --output-dir data
+Run with: ./run.sh
+=== Vulkan/MoltenVK FFT Barrier Bug Reproduction ===
+MoltenVK shader dump dir: /Users/shaharsandhaus/MLVKPLRQ/MoltenVKbarriertest/vulkan/shader_dump
+Managed MoltenVK ICD: /Users/shaharsandhaus/MLVKPLRQ/MoltenVKbarriertest/build/toolchains/pairs/moltenvk-32dceb35e2c9__glslang-f0bd0257c308/runtime/MoltenVK_icd.json
+Managed glslangValidator: /Users/shaharsandhaus/MLVKPLRQ/MoltenVKbarriertest/build/toolchains/pairs/moltenvk-32dceb35e2c9__glslang-f0bd0257c308/tools/glslangValidator
+Device: Apple M2 Pro
+Vulkan API: 1.1.334
+Driver version: 10402
+FFT layout: 875 x 125
+Threads per workgroup: 25
+Iterations per variant: 10
+Tolerance: abs <= 0.005, rel <= 0.0005
+Input blob: ../data/fft_875x125_input.bin
+Reference blob: ../data/fft_875x125_reference.bin
+barrier() shader: barrier_only.spv
+memoryBarrier(); barrier() shader: memory_barrier_then_barrier.spv
+Validation: disabled
+Expected bytes per blob: 875000
+
+--- Test 1: barrier() ---
+  Iteration 1: 185 mismatches out of 109375 (FAIL), max abs error 2.79523e+13
+    fft 3, bin 24, index 399: expected (6.3577, 24.2782), got (6.1099, 23.7993), abs error 0.539181
+    fft 3, bin 49, index 424: expected (9.13412, 9.22396), got (9.61606, 9.46572), abs error 0.53918
+    fft 3, bin 74, index 449: expected (-12.2654, 8.1965), got (-12.7974, 8.28419), abs error 0.539177
+    fft 3, bin 99, index 474: expected (-14.9492, 5.71829), got (-14.5703, 5.33465), abs error 0.539178
+    fft 3, bin 124, index 499: expected (-12.8167, 3.49285), got (-12.8977, 4.02591), abs error 0.539177
+  Iteration 2: 410 mismatches out of 109375 (FAIL), max abs error 1.91133e+38
+    fft 3, bin 24, index 399: expected (6.3577, 24.2782), got (6.1099, 23.7993), abs error 0.539181
+    fft 3, bin 49, index 424: expected (9.13412, 9.22396), got (9.61606, 9.46572), abs error 0.53918
+    fft 3, bin 74, index 449: expected (-12.2654, 8.1965), got (-12.7974, 8.28419), abs error 0.539177
+    fft 3, bin 99, index 474: expected (-14.9492, 5.71829), got (-14.5703, 5.33465), abs error 0.539178
+    fft 3, bin 124, index 499: expected (-12.8167, 3.49285), got (-12.8977, 4.02591), abs error 0.539177
+  Iteration 3: 510 mismatches out of 109375 (FAIL), max abs error 5.1164e+34
+    fft 1, bin 20, index 145: expected (-0.522082, 1.04994), got (0.78288, -9.27989), abs error 10.4119
+    fft 1, bin 45, index 170: expected (-6.9711, 0.0769742), got (-1.95511, 9.20102), abs error 10.4119
+    fft 1, bin 70, index 195: expected (27.3548, 13.2556), got (17.9338, 8.82244), abs error 10.4119
+    fft 1, bin 95, index 220: expected (-2.8571, 6.03587), got (7.37041, 4.08487), abs error 10.4119
+    fft 1, bin 120, index 245: expected (3.51775, -1.38691), got (-3.60971, 6.20306), abs error 10.4119
+  Iteration 4: 545 mismatches out of 109375 (FAIL), max abs error 2.4515e+38
+    fft 4, bin 4, index 504: expected (15.2285, 4.33464), got (15.455, 4.32609), abs error 0.226614
+    fft 4, bin 9, index 509: expected (5.4141, 1.57571), got (5.30995, 1.37445), abs error 0.226616
+    fft 4, bin 14, index 514: expected (9.89683, 4.38204), got (9.75906, 4.56197), abs error 0.226619
+    fft 4, bin 19, index 519: expected (9.91377, -15.5067), got (10.1352, -15.4587), abs error 0.226617
+    fft 4, bin 24, index 524: expected (27.62, -12.5087), got (27.5691, -12.7296), abs error 0.22661
+  Iteration 5: 450 mismatches out of 109375 (FAIL), max abs error 4.88666e+36
+    fft 9, bin 24, index 1149: expected (-7.18076, 0.384117), got (-6.56776, 1.56874), abs error 1.33383
+    fft 9, bin 49, index 1174: expected (7.35617, -1.21638), got (6.16393, -1.81445), abs error 1.33383
+    fft 9, bin 74, index 1199: expected (14.5085, -0.161291), got (15.8246, -0.378217), abs error 1.33383
+    fft 9, bin 99, index 1224: expected (-5.87513, -0.400647), got (-6.81235, 0.548417), abs error 1.33383
+    fft 9, bin 124, index 1249: expected (9.17171, 9.36738), got (9.37208, 8.04868), abs error 1.33383
+  Iteration 6: 435 mismatches out of 109375 (FAIL), max abs error 3.93073e+30
+    fft 0, bin 4, index 4: expected (-11.2879, 22.3252), got (-10.9266, 22.3116), abs error 0.361611
+    fft 0, bin 9, index 9: expected (3.58878, 2.9079), got (3.42259, 2.58675), abs error 0.361606
+    fft 0, bin 14, index 14: expected (-7.82018, 0.216857), got (-8.04001, 0.503969), abs error 0.361608
+    fft 0, bin 19, index 19: expected (-6.24778, 7.84805), got (-5.89439, 7.92471), abs error 0.361607
+    fft 0, bin 24, index 24: expected (15.4574, 23.3859), got (15.3763, 23.0335), abs error 0.361611
+  Iteration 7: 515 mismatches out of 109375 (FAIL), max abs error 2.32085e+36
+    fft 57, bin 23, index 7148: expected (19.1823, 11.6433), got (18.7831, 10.4652), abs error 1.24398
+    fft 57, bin 48, index 7173: expected (7.6798, -12.1661), got (8.69531, -11.4476), abs error 1.24398
+    fft 57, bin 73, index 7198: expected (3.51581, -16.3018), got (2.27193, -16.2862), abs error 1.24397
+    fft 57, bin 98, index 7223: expected (-3.64121, 0.6029), got (-2.64408, -0.140878), abs error 1.24398
+    fft 57, bin 123, index 7248: expected (5.99686, 3.58317), got (5.62735, 4.771), abs error 1.24398
+  Iteration 8: 400 mismatches out of 109375 (FAIL), max abs error 5.44439e+37
+    fft 6, bin 24, index 774: expected (4.78247, -16.9065), got (4.19764, -18.0367), abs error 1.27254
+    fft 6, bin 49, index 799: expected (2.63812, -7.81682), got (3.77557, -7.24623), abs error 1.27255
+    fft 6, bin 74, index 824: expected (14.1175, -22.0638), got (12.8619, -21.8568), abs error 1.27255
+    fft 6, bin 99, index 849: expected (-9.76157, 4.92066), got (-8.86741, 4.01519), abs error 1.27255
+    fft 6, bin 124, index 874: expected (4.70147, 2.39826), got (4.5103, 3.65637), abs error 1.27255
+  Iteration 9: 270 mismatches out of 109375 (FAIL), max abs error 2.8076e+20
+    fft 16, bin 4, index 2004: expected (-7.08813, -1.50678), got (-7.84675, -1.47817), abs error 0.759153
+    fft 16, bin 9, index 2009: expected (-9.9682, 23.3574), got (-9.61931, 24.0317), abs error 0.759154
+    fft 16, bin 14, index 2014: expected (17.8309, -1.40237), got (18.2924, -2.00513), abs error 0.759149
+    fft 16, bin 19, index 2019: expected (-12.3463, 9.80991), got (-13.0882, 9.64896), abs error 0.759154
+    fft 16, bin 24, index 2024: expected (-10.1096, -5.9404), got (-9.93938, -5.20059), abs error 0.759154
+  Iteration 10: 280 mismatches out of 109375 (FAIL), max abs error 1.79582e+29
+    fft 8, bin 24, index 1024: expected (9.19316, -0.746836), got (7.86856, -3.30661), abs error 2.88219
+    fft 8, bin 49, index 1049: expected (-16.4793, -0.457269), got (-13.9031, 0.835054), abs error 2.88219
+    fft 8, bin 74, index 1074: expected (5.9325, -2.54567), got (3.08868, -2.07691), abs error 2.88219
+    fft 8, bin 99, index 1099: expected (-7.13245, -6.1096), got (-5.10727, -8.16038), abs error 2.88219
+    fft 8, bin 124, index 1124: expected (-15.4722, 3.61181), got (-15.9052, 6.4613), abs error 2.88219
+  Result: FAIL (mismatches in 10/10 iterations)
+
+--- Test 2: memoryBarrier(); barrier() ---
+  Iteration 1: 0 mismatches out of 109375 (PASS), max abs error 2.05428e-05
+  Iteration 2: 0 mismatches out of 109375 (PASS), max abs error 2.05428e-05
+  Iteration 3: 0 mismatches out of 109375 (PASS), max abs error 2.05428e-05
+  Iteration 4: 0 mismatches out of 109375 (PASS), max abs error 2.05428e-05
+  Iteration 5: 0 mismatches out of 109375 (PASS), max abs error 2.05428e-05
+  Iteration 6: 0 mismatches out of 109375 (PASS), max abs error 2.05428e-05
+  Iteration 7: 0 mismatches out of 109375 (PASS), max abs error 2.05428e-05
+  Iteration 8: 0 mismatches out of 109375 (PASS), max abs error 2.05428e-05
+  Iteration 9: 0 mismatches out of 109375 (PASS), max abs error 2.05428e-05
+  Iteration 10: 0 mismatches out of 109375 (PASS), max abs error 2.05428e-05
+  Result: PASS (0/10 iterations had mismatches)
+
+=== CONCLUSION ===
+The MoltenVK FFT workload reproduces a synchronization failure with barrier() alone.
+Adding memoryBarrier() before barrier() is sufficient to match the NumPy reference on this machine.
+
+Validation: disabled
+
+=== Running metal ===
+Build complete.
+Run with: ./barrier_test.exec
+=== Metal Dumped Shader FFT Validation ===
+Device: Apple M2 Pro
+macOS: Version 15.7.5 (Build 24G624)
+FFT layout: 875 x 125
+Threads per threadgroup: 25
+Iterations per shader: 10
+Tolerance: abs <= 0.005, rel <= 0.0005
+Input blob: ../data/fft_875x125_input.bin
+Reference blob: ../data/fft_875x125_reference.bin
+Shader dump dir: ../vulkan/shader_dump
+Kernel function: main0
+Discovered dumped shaders: 2
+Expected bytes per blob: 875000
+
+--- Test 1: shader-cs-09d44a25441d4ba7.metal ---
+  Iteration 1: 0 mismatches out of 109375 (PASS), max abs error 2.0542773e-05
+  Iteration 2: 0 mismatches out of 109375 (PASS), max abs error 2.0542773e-05
+  Iteration 3: 0 mismatches out of 109375 (PASS), max abs error 2.0542773e-05
+  Iteration 4: 0 mismatches out of 109375 (PASS), max abs error 2.0542773e-05
+  Iteration 5: 0 mismatches out of 109375 (PASS), max abs error 2.0542773e-05
+  Iteration 6: 0 mismatches out of 109375 (PASS), max abs error 2.0542773e-05
+  Iteration 7: 0 mismatches out of 109375 (PASS), max abs error 2.0542773e-05
+  Iteration 8: 0 mismatches out of 109375 (PASS), max abs error 2.0542773e-05
+  Iteration 9: 0 mismatches out of 109375 (PASS), max abs error 2.0542773e-05
+  Iteration 10: 0 mismatches out of 109375 (PASS), max abs error 2.0542773e-05
+  Result: PASS (0/10 iterations had mismatches)
+
+--- Test 2: shader-cs-c958ee748730720d.metal ---
+  Iteration 1: 0 mismatches out of 109375 (PASS), max abs error 2.0542773e-05
+  Iteration 2: 0 mismatches out of 109375 (PASS), max abs error 2.0542773e-05
+  Iteration 3: 0 mismatches out of 109375 (PASS), max abs error 2.0542773e-05
+  Iteration 4: 0 mismatches out of 109375 (PASS), max abs error 2.0542773e-05
+  Iteration 5: 0 mismatches out of 109375 (PASS), max abs error 2.0542773e-05
+  Iteration 6: 0 mismatches out of 109375 (PASS), max abs error 2.0542773e-05
+  Iteration 7: 0 mismatches out of 109375 (PASS), max abs error 2.0542773e-05
+  Iteration 8: 0 mismatches out of 109375 (PASS), max abs error 2.0542773e-05
+  Iteration 9: 0 mismatches out of 109375 (PASS), max abs error 2.0542773e-05
+  Iteration 10: 0 mismatches out of 109375 (PASS), max abs error 2.0542773e-05
+  Result: PASS (0/10 iterations had mismatches)
+
+

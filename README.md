@@ -46,7 +46,7 @@ By default, the test will automatically use the installed Vulkan loader and `gls
 ```bash
 # Current commit in the main branch in MoltenVK as of 2026-03-11, and version 16.2.0 of glslang
 bash vulkan/select_toolchain.sh \
-  --moltenvk-ref f79c6c5690d3ee06ec3a00d11a8b1bab4aa1d030 \
+  --moltenvk-ref 32dceb35e2c95b46cec501033cbc3a1ddf32d6e8 \
   --glslang-ref f0bd0257c308b9a26562c1a30c4748a0219cc951
 ```
 
